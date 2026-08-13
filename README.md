@@ -45,6 +45,7 @@ Landed so far, **bronze only**, across the five pilot Gemeinden:
 | `bronze.gemeinde_bevoelkerung` | 95 | data.tg.ch `sk-stat-56` | Gemeinde context |
 | `bronze.gemeinde_bevoelkerung_alter` | 2,090 | data.tg.ch `sk-stat-58` | Gemeinde context |
 | `bronze.bodenpreise` | 520 | data.tg.ch `dfs-sv-1` | Land value (Gemeinde CHF/m²) |
+| `bronze.gefahrenkarte` | 6,422 | 3 x `ng_gefahrenkarte_*` WFS | Hazard |
 | `bronze.oereb_extract` | 25 | ÖREB webservice | Restrictions |
 | `bronze.oereb_restriction` | 80 | (unnested from above) | Restrictions |
 
@@ -99,20 +100,17 @@ the federal spec it (partly) follows is at
 
 ## Next steps
 
-All five spec layers now have a bronze source, in three different access
-patterns (bulk spatial, bulk tabular, per-parcel query). That was the
-precondition for designing the gold schema, so:
+Bronze is **complete for all five spec layers**, in three access patterns
+(bulk spatial, bulk tabular, per-parcel query). `make bronze` rebuilds the
+whole thing from scratch. That was the stated precondition for gold, so:
 
 1. **Design the gold schema**, checked against all of them at once.
    Watch: E-GRID vs spatial vs BFS-Nr as join keys; time-series vs
    snapshot grain; `sk-stat-4`'s 2019-2024 window as the binding
    constraint on any year join. Parcel-level price is settled - it comes
    from `bronze.landwertzonen` via `lwz`, not from `bronze.bodenpreise`.
-2. Bronze for **Gefahrenkarte** (hazard). Endpoints are now confirmed and
-   are WFS, so they fit the existing code path - slugs
-   `ng_gefahrenkarte_synoptisch` / `_wasser` / `_rutschungen` /
-   `_erhebungsgebiet`. Note ÖREB already carries `ch.Gefahrenzone` and
-   `ch.Gewaesserraum`, so check what these add before going deep.
+   For hazard, filter to one `_source_layer` before joining, and keep
+   "graded `keine`" distinct from "outside the surveyed perimeter".
 
 Optional, same code path as Bauzonen: `ms:landwirt`
 (Landwirtschaftszonen) rounds out the spec's "buildability" question,

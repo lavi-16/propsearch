@@ -26,6 +26,7 @@ import pandas as pd
 import requests
 
 FES_NS = "http://www.opengis.net/fes/2.0"
+GML_NS = "http://www.opengis.net/gml/3.2"
 DEFAULT_PAGE_SIZE = 5000
 
 # GML envelope corners -- transport plumbing, not source attributes.
@@ -60,6 +61,28 @@ def property_like_any(prop: str, patterns) -> str:
             "</fes:PropertyIsLike>"
             for p in patterns
         ]
+    )
+
+
+def bbox(
+    minx: float, miny: float, maxx: float, maxy: float,
+    geom_property: str = "msGeometry", srs: str = "EPSG:2056",
+) -> str:
+    """Spatial FES filter. Use only when the layer carries no attribute that
+    identifies the pilot area -- an attribute filter is preferred (see the
+    module docstring). Derive the envelope from a real extent rather than
+    typing one in; a guessed bbox can silently select nothing.
+    """
+    return (
+        f'<fes:Filter xmlns:fes="{FES_NS}" xmlns:gml="{GML_NS}">'
+        "<fes:BBOX>"
+        f"<fes:ValueReference>{escape(geom_property)}</fes:ValueReference>"
+        f'<gml:Envelope srsName="{escape(srs)}">'
+        f"<gml:lowerCorner>{minx} {miny}</gml:lowerCorner>"
+        f"<gml:upperCorner>{maxx} {maxy}</gml:upperCorner>"
+        "</gml:Envelope>"
+        "</fes:BBOX>"
+        "</fes:Filter>"
     )
 
 

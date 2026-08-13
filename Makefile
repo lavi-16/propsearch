@@ -1,7 +1,7 @@
 .PHONY: setup discover \
-        landwertzonen bauzonen gemeindestats bodenpreise oereb \
+        landwertzonen bauzonen gemeindestats bodenpreise gefahrenkarte oereb \
         bronze-landwertzonen bronze-bauzonen bronze-gemeindestats \
-        bronze-bodenpreise bronze-oereb \
+        bronze-bodenpreise bronze-gefahrenkarte bronze-oereb \
         bronze
 
 setup:
@@ -23,6 +23,9 @@ gemeindestats:
 bodenpreise:
 	uv run python -m propsearch_data.ingest.discover_bodenpreise
 
+gefahrenkarte:
+	uv run python -m propsearch_data.ingest.discover_gefahrenkarte
+
 # depends on bronze.landwertzonen for its parcel sample
 oereb:
 	uv run python -m propsearch_data.ingest.discover_oereb
@@ -40,12 +43,15 @@ bronze-gemeindestats:
 bronze-bodenpreise:
 	uv run python -m propsearch_data.ingest.load_bronze_bodenpreise
 
+bronze-gefahrenkarte:
+	uv run python -m propsearch_data.ingest.load_bronze_gefahrenkarte
+
 bronze-oereb:
 	uv run python -m propsearch_data.ingest.load_bronze_oereb
 
 # Full refresh. OEREB is last because its parcel sample is drawn from
 # bronze.landwertzonen, so that table must already be loaded.
-bronze: landwertzonen bauzonen gemeindestats bodenpreise \
+bronze: landwertzonen bauzonen gemeindestats bodenpreise gefahrenkarte \
         bronze-landwertzonen bronze-bauzonen bronze-gemeindestats \
-        bronze-bodenpreise \
+        bronze-bodenpreise bronze-gefahrenkarte \
         oereb bronze-oereb

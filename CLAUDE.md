@@ -102,9 +102,41 @@ compares a mean of parcel values against quartile bounds from a different method
 So the two sources are complementary: **Landwertzonen prices the parcel** (direct on E-GRID,
 no spatial join needed), `dfs-sv-1` gives Gemeinde-level bands and history.
 
+## Gefahrenkarte (`bronze.gefahrenkarte`) — the graded hazard layer
+
+`ingest/discover_gefahrenkarte.py`. Three services, one table, 6,422 features in the pilot.
+This is what ÖREB can't answer (see the ÖREB section): actual grading, not a presence flag.
+
+| Column | Domain (as landed in the pilot) |
+|---|---|
+| `gefahrenstufe` | `erheblich` 554, `mittel` 1511, `gering` 2798, `keine` 1519, `Restgefahr` 40 |
+| `matrixfeld` | `MF0`–`MF9`, `MF99` — the intensity × probability matrix |
+| `prozess_massgebend` | `Seehochwasser_Thurhochwasser`, `Wasser_mitGewaesser.Ueberflutung` / `.Ufererosion`, `Oberflaechenabfluss`, `Rutschung.spontan` / `.permanent`, `kein_Prozess` |
+
+- **Selection is spatial, uniquely among the WFS sources.** These layers carry no Gemeinde
+  attribute at all — no `gemcode`, no `t_id`. `discover_gefahrenkarte.py` fetches the five
+  pilot polygons from `hoheitsgrenzen` `ms:Gemeinden_Layer`, derives the bbox from them at
+  runtime, filters server-side with `wfs.bbox()`, then narrows to rows intersecting a pilot
+  Gemeinde. That last step is **row selection only — geometries are never clipped.**
+  Don't hardcode the bbox; deriving it is what stops a repeat of the `PILOT_BBOX` miss.
+- **The three layers overlap each other, but not themselves.** Verified on the landed data:
+  within a layer every matched parcel gets exactly one grading (max = avg = 1.000 for all
+  three); across layers a parcel averages 2.97 rows, up to 3. **Filter to one `_source_layer`
+  before aggregating** or every parcel triplicates. `_synoptisch` is the combined view;
+  `_wasser` and `_rutschungen` are per-process detail over the same ground.
+- **`keine` ≠ no match.** 9,005 of 9,879 pilot parcels fall inside the synoptic layer. A
+  parcel graded `keine` was surveyed and is clear; a parcel with no match is outside the
+  surveyed perimeter — **unknown, not safe.** These are different facts; don't merge them.
+- **84 of 6,422 geometries are invalid** (all `Ring Self-intersection`). They land as-is per
+  the bronze contract. `ST_Intersects` tolerates them, but silver should `ST_MakeValid`
+  before any area or overlay arithmetic.
+- Perimeter/metadata layers (`ms:Perimeter_*`, `ms:Hauptprozesse`,
+  `ms:Hinweise_auf_bestehende_Gefahrenkarten`, `ms:technische_berichte_gefahrenkartierung`)
+  are survey extents, not gradings — deliberately not ingested.
+
 ## ÖREB webservice — `ingest/oereb.py`
 
-Base `https://map.geo.tg.ch/services/oereb/`, version `extract-2.0`, 33 themes. This is the
+Base `https://map.geo.tg.ch/services/oereb/`, version `extract-2.0`, 32 themes. This is the
 **Restrictions** layer and it is a fundamentally different access pattern: one request per
 parcel returning ~175 KB of nested JSON, with no bulk "everything in this Gemeinde" call.
 That is why ingestion is a deterministic sample (`PARCELS_PER_GEMEINDE`), not a full pull —
@@ -204,6 +236,7 @@ Landed so far — all five spec layers now have a bronze source:
 | `bronze.gemeinde_bevoelkerung` | 95 | data.tg.ch `sk-stat-56` | bulk, tabular |
 | `bronze.gemeinde_bevoelkerung_alter` | 2,090 | data.tg.ch `sk-stat-58` | bulk, tabular |
 | `bronze.bodenpreise` | 520 | data.tg.ch `dfs-sv-1` | bulk, tabular |
+| `bronze.gefahrenkarte` | 6,422 | 3 × `ng_gefahrenkarte_*` WFS | bulk, spatial (MultiPolygon) |
 | `bronze.oereb_extract` | 25 | ÖREB webservice | **per-parcel query** |
 | `bronze.oereb_restriction` | 80 | (unnested from above) | — |
 
@@ -245,11 +278,11 @@ Confirmed so far:
   (`gemeinde_name`, `gemeinde_bfsnr`, `bezirk`; 80 rows). Use it instead of hardcoding BFS
   numbers from memory.
 
-**Gefahrenkarte is confirmed and is WFS**, not WMS-only as originally assumed — so it fits the
-existing `wfs.py` code path. Slug pattern `ng_gefahrenkarte_<process>`; live services are
+**Gefahrenkarte is WFS**, not WMS-only as originally assumed — so it fits the existing
+`wfs.py` code path. Slug pattern `ng_gefahrenkarte_<process>`; live services are
 `_synoptisch` (`ms:Gefaehrdung_synoptisch`, `ms:Hauptprozesse`, perimeters), `_wasser`
 (`ms:Gefaehrdung_Wasser`), `_rutschungen` (`ms:Gefaehrdung_Rutschungen`) and
-`_erhebungsgebiet`. Endpoints are recorded but **not yet ingested**.
+`_erhebungsgebiet`. Ingested — see the Gefahrenkarte section above.
 
 Add newly confirmed endpoints to the `ENDPOINTS` dict in `ingest/discover_capabilities.py`.
 
@@ -274,6 +307,7 @@ The two layers inspected so far do *not* share a join key, so there is no single
 |---|---|---|---|
 | `landwertzonen` (`ms:Landwertzonen_*`) | Point, one per parcel | `gs_egris_egrid`, `gemcode` | direct on E-GRID (carries CHF/m², see above) |
 | `oereb_ortsplanung_bauzonen` (`ms:bau`) | Polygon | no E-GRID; `t_id` is `<bfs>_<id>` | spatial (point-in-polygon) |
+| `ng_gefahrenkarte_*` | Polygon | **no Gemeinde key at all** | spatial both ways: bbox to select, point-in-polygon to join |
 
 In `bronze.landwertzonen`, `gs_egris_egrid` is **unique across all 9,879 rows** — the three
 source layers partition the parcel space with zero overlap, so there is exactly one land-value
@@ -306,8 +340,20 @@ the same way before being added to `TYPENAMES`.
   like total disagreement. Remaining differences are overlay restrictions
   (Gestaltungsplanpflicht, Umgebungsschutzzone, Gefahrenzone…), which are additional, not
   contradictory.
-- ÖREB carries `ch.Gefahrenzone` and `ch.Gewaesserraum`, so it partially covers the hazard
-  question that the still-missing Gefahrenkarte WMS was meant to answer.
+- **ÖREB does not answer the hazard question.** `ch.Gefahrenzone` is **not** a TG ÖREB theme —
+  it is absent from the service's 32 themes and from both `ConcernedTheme` and
+  `ThemeWithoutData` on all 25 sampled parcels. Hazard reaches ÖREB only as a
+  `ch.Nutzungsplanung` *overlay label* (`Gefahrenzone`, `Gefahrenzone (GF)`,
+  `Gefahrenzonen (Gef)`, `Gebiete mit Hochwasserschutz (Hs)` — three spellings across four
+  Gemeinden, unnormalised like the Bauzonen codes). 7 of 25 sampled parcels carry one.
+  That is a **binary presence flag**: `type_code` is empty on every such row, and searching
+  all 25 extracts for `HQ30`/`HQ100`/`HQ300`, `Wiederkehr`, `Jährlichkeit`, `Intensität`,
+  `Gefahrenstufe` returns zero hits. What it does give is `area_share` (m²),
+  `part_in_percent`, `lawstatus` and an oereblex link to the ordinance.
+  Graded intensity requires `bronze.gefahrenkarte` — see below.
+- `ch.Gewaesserraum` is likewise binary (bare `Gewässerraum` legend, empty `TypeCode`), and is
+  `ThemeWithoutData` on 24 of 25 parcels — **"no data published", not "no restriction"**.
+  Don't read its absence as safety.
 
 When code contains a guess, mark it as one in the docstring or comment the way the existing
 scripts do (e.g. `PILOT_BBOX` is flagged as approximate). This repo distinguishes verified
