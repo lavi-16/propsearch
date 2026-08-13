@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+docs/wfs-capabilities/
+data/bronze/
+data/silver/
