@@ -2,7 +2,7 @@
 
 **Status:** POC — written so it can grow into a real PropSearch feature spec later
 **Owner:** Lavi
-**Last updated:** 2026-08-12
+**Last updated:** 2026-08-13
 
 ---
 
@@ -50,10 +50,15 @@ Secondary goal: validate that the bronze → silver → gold pipeline pattern wo
 
 ## Open Questions
 
-- **Address → parcel resolution** (engineering): Can ÖREB/WFS be queried directly by address/coordinate, or is a separate geocoding step needed? → check ThurGIS API docs / GetCapabilities.
+Still open:
+
+- **Address → parcel resolution** (engineering): **partly resolved.** *Coordinate* → parcel works: the ÖREB `getegrid` route accepts `EN=<easting>,<northing>` (LV95) and `GNSS=<lat>,<lon>` (WGS84, lat first) and returns an E-GRID. Use `GNSS` downstream of a geocoder. What remains genuinely open is *address* → coordinate, which still needs a geocoder — no landed source provides one.
 - **Licensing** (legal, non-blocking for POC): OGD and geodienste.ch usage terms need review before any of this becomes a PropSearch product feature, not just personal use.
-- **Field-level schema** (engineering): Actual attribute names in the Bauzonen/ÖREB WFS layers — need `DescribeFeatureType` output once we start building.
-- **Gemeinde-ID reconciliation** (data): Statistics use BFS-Nr; need to confirm the geodata layers key the same way, or build a mapping table.
+
+Resolved:
+
+- ~~**Field-level schema**~~ — resolved. All five layers landed in bronze from confirmed `DescribeFeatureType` output; `sql/schema/silver/` and `sql/schema/gold/` are written against those names.
+- ~~**Gemeinde-ID reconciliation**~~ — resolved. `gemcode` in the Landwertzonen layers *is* the BFS-Nr (Kreuzlingen = 4671 in both it and `hoheitsgrenzen.gemeinde_bfsnr`). Bronze keys it four different ways; `silver.gemeinde` pins it to `bfs_nr integer` everywhere, and `gold.parcel` / `gold.gemeinde_year` join on it.
 
 ## Success Criteria for the POC
 
@@ -63,7 +68,8 @@ Secondary goal: validate that the bronze → silver → gold pipeline pattern wo
 
 ## Next Steps
 
-1. Inspect WFS/WMS `GetCapabilities` for the pilot Gemeinden — confirm access method and field names
-2. Design the gold-layer schema (parcel record + Gemeinde context table)
-3. Build bronze ingestion for the 5 pilot sources
-4. Run the first end-to-end lookup on one real test parcel
+1. ~~Inspect WFS/WMS `GetCapabilities` for the pilot Gemeinden~~ — done
+2. ~~Design the gold-layer schema (parcel record + Gemeinde context table)~~ — done and built: `gold.parcel` + `gold.gemeinde_year`, joined on `bfs_nr`
+3. ~~Build bronze ingestion for the 5 pilot sources~~ — done, plus silver and gold
+4. ~~Run the first end-to-end lookup on one real test parcel~~ — done: `CH107710829377` (Kreuzlingen 3228) returns all five layers from `gold.parcel`, with its 1,180 CHF/m² EFH price cross-checked against the independent Bodenpreise band (817–1,514, market-based)
+5. **Next:** bulk WFS restrictions ingestion (`docs/next-bronze-restrictions.md`) — the one spec layer still served only by a 0.3% ÖREB sample, and what unblocks `gold.parcel_restriction`

@@ -1,6 +1,8 @@
 # Gold schema — design proposal
 
-Status: **proposed, not built.** No tables created yet.
+Status: **built.** `sql/schema/gold/`, `make gold`, 45 tests. Four tables:
+`gold.parcel` (9,879), `gold.parcel_hazard` (17,784), `gold.gemeinde_year` (115),
+`gold.gemeinde_bodenpreis` (520).
 
 > **Update (2026-08-13): silver is built, and the three open decisions below
 > are resolved.** See the "Open decisions — resolved" section at the end.
@@ -15,6 +17,19 @@ Status: **proposed, not built.** No tables created yet.
 >
 > Everything else here held up against the built data, including every
 > measured figure.
+
+> **Update (2026-08-13, build): three changes from the proposal below.**
+> See "What the build changed" at the end for the evidence.
+>
+> - **`gold.parcel_hazard` carries two layers, not three.** The synoptic
+>   layer was tested and found derivable from the two process layers, so it
+>   is excluded by CHECK. Fan-out drops 2.97× → 2×.
+> - **`hazard_grade_synoptic` → `hazard_grade_overall`**, so the column on
+>   `gold.parcel` cannot be confused with the layer that is no longer in the
+>   detail table.
+> - **`gold.gemeinde_year` carries two age *shares*, not the age table.**
+>   `silver.gemeinde_bevoelkerung_alter` is 38 rows per Gemeinde-year and
+>   would have fanned 5 rows into 190.
 
 Written once all five spec layers had landed in bronze, which was the
 stated precondition for designing gold against real data rather than
@@ -194,3 +209,79 @@ record `extract_fetched_at` per parcel.
   available as WFS for 7 of the 9 observed themes. Building a gold table from
   0.3% coverage was rejected; it waits for that ingestion. See
   `docs/next-bronze-restrictions.md`.
+
+## What the build changed
+
+### The synoptic layer is derivable, so it is not in the detail table
+
+This document argued the three hazard layers must stay in a per-layer table
+because "across the three layers a parcel averages 2.97 rows". True, but it
+left the prior question unasked: **is `_synoptisch` an independent assessment,
+or is it computable from `_wasser` + `_rutschungen`?** Tested at parcel grain
+across all 9,005 surveyed parcels, ranking
+`keine < Restgefahr < gering < mittel < erheblich` and taking the max:
+
+| | |
+|---|---|
+| synoptic `gefahrenstufe` == max of the two process layers | **9,004 / 9,005** |
+| synoptic `prozess_massgebend` == that of the winning layer | 9,000 / 9,005 |
+| synoptic `matrixfeld` == that of the winning layer | 9,000 / 9,005 |
+| synoptic parcels not covered by `_rutschungen` | 0 |
+
+The 5 process/matrixfeld differences are **ties** — both layers at equal
+severity, the tie-break picking arbitrarily — not disagreements.
+
+The single grade exception, `CH854589778397`, was inspected: the parcel point
+sits **0.26 m inside** a synoptic `mittel` polygon and **0.31 m outside** a
+Wasser `mittel` polygon. The layers' boundaries differ by under a metre there.
+A point-in-polygon edge artifact, not an independent assessment.
+
+So `gold.parcel_hazard` carries the two **process** layers only (17,784 rows),
+enforced by `CHECK (source_layer IN (...))`. Nothing is lost: the *published*
+synoptic grading still lands on `gold.parcel.hazard_grade_overall` — including
+that one parcel's `mittel`, carried verbatim rather than recomputed into
+agreement with its components. What was removed is a duplicate row, and with
+it the confusion of two "synoptic" concepts in two tables under near-identical
+names.
+
+### `hazard_rank` needed a biconditional, not a one-way guard
+
+The proposal's `hazard_rank IS NULL OR grade <> 'Restgefahr'` is asymmetric and
+leaks two states: a surveyed, graded row with a **missing** rank passes, and an
+unsurveyed row carrying a **stale** rank passes too — there the grade is NULL,
+`<>` evaluates to NULL, and a CHECK admits NULL. Built as:
+
+```sql
+CHECK ((hazard_rank IS NULL)
+       = (hazard_grade_overall IS NULL OR hazard_grade_overall = 'Restgefahr'))
+```
+
+### The age table is aggregated, not joined
+
+`silver.gemeinde_bevoelkerung_alter` is 2 sexes × 19 bands = **38 rows per
+Gemeinde-year**; joining it into `gold.gemeinde_year` fans 5 rows into 190 per
+year — the same grain mistake the bodenpreis/parcel split avoids. It collapses
+to `pct_65_plus` and `pct_under_20`, chosen because both cuts fall **exactly on
+a band boundary**, so both are exact sums. A median or mean age would need
+within-band interpolation and an invented midpoint for the open-ended `90+`
+band — the same reason no Bodenpreise median is emitted. Age sums reconcile
+exactly with `gemeinde_bevoelkerung` on all 55 overlapping Gemeinde-years.
+
+### What the tests can and cannot guarantee about grain
+
+Worth recording, because it is easy to state backwards: **spine growth is caught
+by the PK at build time**, not by a test — any fan-out duplicates an `egrid` and
+the INSERT aborts (verified by injecting one). What no constraint catches is the
+spine **shrinking**: a `LEFT JOIN` becoming an inner join drops parcels silently,
+and every coverage ratio computed from gold stays plausible because its
+denominator shrank too. That is what the row-count assertions are for, and the
+parcels at risk are the interesting ones — the 76 with no `lwz`, the 1,576
+outside every Bauzone, the 874 never surveyed.
+
+### `gold.gemeinde_year`'s spine is a UNION
+
+Steuerfuss spans 2004–2026 and today covers every year the other three series
+carry, so sourcing the spine from it would give the same 115 rows. It is still
+wrong: a future series with a year outside that range would vanish. The spine is
+a `UNION` of all four series' `(bfs_nr, jahr)` pairs, with a test asserting no
+source row is orphaned.

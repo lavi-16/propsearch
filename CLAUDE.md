@@ -224,12 +224,17 @@ Unknown slugs return HTTP 401, so probing candidates is cheap and safe.
 Original decision (2026-08-13): bronze first, gold not to be designed until several
 sources had landed and could be checked against each other.
 
-**Both later steps are now settled.** Bronze is complete for all five spec layers,
-`docs/gold-schema-design.md` was written against the landed data, and **silver is
-built and tested** — see the silver section above. Gold is the next step and is
-still **not built**: it will be proposed as DDL selecting from `silver.*`, never
-from `bronze.*`, with `gold.parcel` keyed on `egrid` alone (single 2024 vintage)
-and `gold.parcel_restriction` **deferred** pending the bulk WFS ingestion.
+**All three layers are now built.** Bronze is complete for all five spec layers,
+silver is built and tested, and **gold is built and tested** — see the two
+sections below. Gold selects from `silver.*` and never from `bronze.*` (a test
+enforces this by reading the DDL text, since Postgres records no catalog
+dependency for an `INSERT ... SELECT`). `gold.parcel` is keyed on `egrid` alone
+(single 2024 vintage) and `gold.parcel_restriction` remains **deferred** pending
+the bulk WFS ingestion.
+
+The remaining open work is the bulk WFS restrictions pull
+(`docs/next-bronze-restrictions.md`), which is what unblocks
+`gold.parcel_restriction`.
 
 Landed so far — all five spec layers now have a bronze source:
 
@@ -319,13 +324,70 @@ Things silver settled that contradict earlier notes here:
 Tests are read-only assertions against whatever `make silver` last built (`tests/`,
 66 of them). No fixture data: the pilot slice is the thing worth testing.
 
+## Gold is built — `sql/schema/gold/`, `make gold`
+
+Same runner pattern as silver (`transform/gold.py`, filename order, one
+transaction per file, full-replace). **Selects from `silver.*` only.** Gold
+corrects nothing — every source-fidelity fix already happened one layer down.
+Its contribution is a **grain guarantee**.
+
+| Table | Rows | Grain | What it pins down |
+|---|---|---|---|
+| `gold.parcel` | 9,879 | `egrid` | zoning + price + hazard in one row; `in_bauzone` / `hazard_surveyed` keep "measured absence" distinct from NULL |
+| `gold.parcel_hazard` | 17,784 | `(egrid, source_layer)` | per-process detail; **synoptic layer excluded by CHECK** |
+| `gold.gemeinde_year` | 115 | `(bfs_nr, jahr)` | 2004–2026, ragged on purpose; age table aggregated to 2 shares |
+| `gold.gemeinde_bodenpreis` | 520 | `(bfs_nr, jahr, zone_category_code)` | `CHECK (jahr > year(window_end))` makes "trailing window" structural |
+
+The two facts join on `bfs_nr` — **always with a year predicate.** `bfs_nr`
+alone yields 9,879 × 23 = 227,217 rows.
+
+Things the build settled:
+
+- **`ms:Gefaehrdung_synoptisch` is derivable from the two process layers**, so
+  it is not in `gold.parcel_hazard`. Max-severity over Wasser + Rutschungen
+  reproduces the published synoptic grade on **9,004 of 9,005** parcels; the one
+  exception (`CH854589778397`) is a sub-metre point-in-polygon boundary
+  artifact, inspected. The published value still lands on
+  `gold.parcel.hazard_grade_overall`, carried verbatim rather than recomputed —
+  so gold does not "fix" the source into agreement with itself. Fan-out is
+  2×, not 2.97×; it is **reduced, not eliminated**.
+- **`hazard_rank` needs a biconditional**, not `rank IS NULL OR grade <> 'Restgefahr'`.
+  The one-way form leaks a graded-but-unranked row *and* an unsurveyed row with
+  a stale rank (grade is NULL there, `<>` yields NULL, and a CHECK admits NULL).
+- **Age structure is two shares, never a join.**
+  `silver.gemeinde_bevoelkerung_alter` is 38 rows per Gemeinde-year and fans 5
+  rows into 190. `pct_65_plus` / `pct_under_20` because both cuts fall exactly
+  on a band boundary, so they are exact sums — a median age would need
+  interpolation and an invented `90+` midpoint.
+- **Spine growth is caught by the PK at build time, not by a test** (any fan-out
+  duplicates an `egrid`). What no constraint catches is the spine *shrinking* —
+  a `LEFT JOIN` silently becoming inner. That is what the row-count assertions
+  cover, and the parcels at risk are the interesting ones (76 with no `lwz`,
+  1,576 outside every Bauzone, 874 unsurveyed).
+- **`gold.parcel` carries no `zone_category_code`,** and a test asserts the
+  column never appears. Bodenpreise's 8 tax categories have no published
+  crosswalk to the parcel's zone; the mapping *looks* obvious (EFH → `4 EFH`,
+  EWG → `3 MFH`) and is a guess. The two tables join on `(bfs_nr, jahr)` only.
+- **`pg_depend` cannot verify the silver-only contract.** Postgres records no
+  dependency between a table and whatever an `INSERT ... SELECT` read to fill
+  it, so a catalog-based check passes either way. The test reads the DDL text
+  with comments stripped.
+
+Gold tests are `tests/test_gold_*.py`, 45 of them, same read-only style —
+111 tests total across silver and gold.
+
 ## The grounding rule
 
-The gold-layer schema is intentionally unwritten. `src/propsearch_data/models.py` and
-`sql/schema/` are empty placeholders, and they stay that way until real field names are
-confirmed via WFS `DescribeFeatureType` output. Do not invent column names, types, or
-service slugs — the discovery scripts exist specifically to replace guesses with confirmed
-values.
+Do not invent column names, types, or service slugs — the discovery scripts exist
+specifically to replace guesses with confirmed values. This is why bronze landed
+before silver was designed, and silver before gold: each layer's DDL was written
+against field names confirmed from the layer below, never against assumptions.
+
+(This section used to say `sql/schema/` and `models.py` were empty placeholders
+awaiting `DescribeFeatureType` output. That precondition has been met:
+`sql/schema/silver/` and `sql/schema/gold/` are both populated.
+`src/propsearch_data/models.py` stays empty — the project models the schema as
+DDL, not as ORM classes, so there is nothing for it to hold.)
 
 Confirmed so far:
 - URL pattern `https://ows.geo.tg.ch/geofy_access_proxy/{slug}` is real. Live slugs:

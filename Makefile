@@ -2,7 +2,7 @@
         landwertzonen bauzonen gemeindestats bodenpreise gefahrenkarte oereb \
         bronze-landwertzonen bronze-bauzonen bronze-gemeindestats \
         bronze-bodenpreise bronze-gefahrenkarte bronze-oereb \
-        bronze silver test
+        bronze silver gold test
 
 setup:
 	uv sync
@@ -62,6 +62,12 @@ bronze: landwertzonen bauzonen gemeindestats bodenpreise gefahrenkarte \
 silver:
 	uv run python -m propsearch_data.transform.silver
 
-# Read-only assertions against the built silver tables. Run after `silver`.
+# --- silver -> gold ---
+# Full rebuild from silver. Never reads bronze, so `silver` must be current.
+gold:
+	uv run python -m propsearch_data.transform.gold
+
+# Read-only assertions against the built silver and gold tables.
+# Run after `silver` and `gold`.
 test:
 	uv run pytest -q

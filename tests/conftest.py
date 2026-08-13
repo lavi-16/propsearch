@@ -1,15 +1,18 @@
 """
-Shared fixtures for the silver assertions.
+Shared fixtures for the silver and gold assertions.
 
-These tests are READ-ONLY and run against whatever `make silver` last
-built -- there is no fixture data and nothing is torn down. That is
-deliberate: the thing worth testing is the real pilot slice, not a
-synthetic miniature of it. Run `make silver` first.
+These tests are READ-ONLY and run against whatever `make silver` and
+`make gold` last built -- there is no fixture data and nothing is torn
+down. That is deliberate: the thing worth testing is the real pilot
+slice, not a synthetic miniature of it. Run `make silver && make gold`
+first.
 
 Most of the invariants that CAN be expressed as a constraint already are
-one, and fail at build time (see sql/schema/silver/00_schema.sql). What
-lives here is the layer constraints cannot reach: row counts, coverage
-ratios, distributions, and cross-source agreement.
+one, and fail at build time (see sql/schema/silver/00_schema.sql and
+sql/schema/gold/00_schema.sql). What lives here is the layer constraints
+cannot reach: row counts, coverage ratios, distributions, cross-source
+agreement -- and, at gold, that a denormalising join did not multiply its
+spine, which no constraint can catch.
 """
 
 import pytest

@@ -1,0 +1,61 @@
+-- Gold layer: the query surface. Two facts, joined on bfs_nr.
+--
+-- WHERE THIS DIFFERS FROM SILVER. Silver corrects the sources -- types,
+-- units, sentinels, an inverse index resolved to CHF. Gold does none of
+-- that; every correction has already happened upstream. Gold selects from
+-- silver.* ONLY, never bronze.*, and its contribution is a GRAIN
+-- GUARANTEE: tables whose row counts cannot silently multiply.
+--
+-- THE TWO GRAINS. The sources do not share one, and forcing them into a
+-- single table destroys information either way:
+--
+--   per parcel, single vintage (2024)  ->  gold.parcel
+--   per Gemeinde, time series          ->  gold.gemeinde_year
+--
+-- Putting a Gemeinde time series on a parcel row means either duplicating
+-- 9,879 parcels x 23 years or collapsing to a "latest" row and discarding
+-- the history the spec explicitly wants. So: two fact tables, joined on
+-- bfs_nr AND a year predicate when a caller wants both. Joining on bfs_nr
+-- alone yields ~227k rows and is almost never what was meant.
+--
+-- WHAT THE CONSTRAINTS BUY, table by table:
+--
+--   * gold.parcel        in_bauzone and hazard_surveyed are NOT NULL
+--                        booleans CHECKed against their payload columns, so
+--                        "outside every Bauzone" and "outside the surveyed
+--                        perimeter" can never be read as a bare NULL that
+--                        looks like "no zoning" / "no hazard"
+--   * gold.parcel        hazard_rank is pinned by a BICONDITIONAL: present
+--                        iff the parcel was surveyed AND graded on the
+--                        ordinal scale. A one-way guard would admit both a
+--                        graded-but-unranked row and an unsurveyed row
+--                        carrying a stale rank
+--   * gold.parcel_hazard CHECK restricts source_layer to the two PROCESS
+--                        layers. The synoptic layer is deliberately absent
+--                        -- it lives on gold.parcel as hazard_grade_overall
+--   * gold.gemeinde_year built from a UNION of every series' years, so a
+--                        future year outside Steuerfuss's range cannot be
+--                        silently dropped
+--   * ..._bodenpreis     CHECK (jahr > year(window_end)) encodes that rows
+--                        are six-year TRAILING WINDOWS, not spot prices
+--
+-- WHY PHYSICAL TABLES AND NOT VIEWS. Note this is NOT silver's reason.
+-- Silver is materialised because ST_MakeValid inside a join predicate
+-- defeats the GIST index and exceeded the statement timeout on this
+-- database -- a hard performance wall. Gold has no such wall: every join
+-- below is key-only, with no spatial predicate anywhere. Gold is
+-- materialised for workflow and testability consistency instead: one build
+-- command, one filename-ordered DDL directory, and PK/FK/CHECK constraints
+-- that only exist on tables. As views, every guarantee listed above would
+-- decay from an unreachable state back into prose.
+--
+-- NOT HERE: gold.parcel_restriction, deferred. The OEREB sample covers 25
+-- of 9,879 parcels (0.3%), and it must not become a column on gold.parcel
+-- -- an absent restriction there would read as "no restriction" when it
+-- means "not fetched". It waits on the bulk WFS pull scoped in
+-- docs/next-bronze-restrictions.md. silver.parcel_restriction_sample keeps
+-- its _sample name and stays out of gold entirely.
+--
+-- Reload semantics match bronze and silver: full replace.
+
+CREATE SCHEMA IF NOT EXISTS gold;
