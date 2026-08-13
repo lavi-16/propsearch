@@ -72,11 +72,14 @@ Two sources carry CHF/m², at different grains:
   crosswalk - but nothing needs it, since parcel pricing goes through
   Landwertzonen.
 
-The gold schema is deliberately not designed yet - see "Next steps".
+**Silver is built** (`make silver`, `make test`) - see "Silver" below. The
+gold schema is designed but not built; `docs/gold-schema-design.md` holds
+the proposal.
 
 **Confirmed endpoints** (slug on `ows.geo.tg.ch/geofy_access_proxy/{slug}`):
 `datensammelstellen`, `oereb_ortsplanung_bauzonen`,
-`gewaesserkataster_gewaesser`, `landwertzonen`, `hoheitsgrenzen`.
+`gewaesserkataster_gewaesser`, `landwertzonen`, `hoheitsgrenzen`,
+`oereb_gewaesserraum`.
 Unknown slugs return HTTP 401, so guessing candidates is cheap.
 
 **Note:** these services serve **GML only** - `application/json` is
@@ -98,24 +101,55 @@ The ÖREB webservice is documented by the canton at
 the federal spec it (partly) follows is at
 [cadastre.ch](https://www.cadastre.ch/de/oereb-webservice).
 
+## Silver
+
+`make silver` rebuilds schema `silver` from bronze - pure database-to-database,
+explicit DDL in `sql/schema/silver/`, run in filename order by
+`transform/silver.py`. `make test` then runs 66 read-only assertions
+against it.
+
+| Table | Rows | |
+|---|---|---|
+| `silver.gemeinde` | 5 | `bfs_nr integer` everywhere |
+| `silver.parcel` | 9,879 | PK `egrid`; `lwz` resolved to CHF/m² |
+| `silver.zone` | 89 | PK `(bfs_nr, zone_code_norm)` |
+| `silver.parcel_zone` | 8,303 | point-in-polygon, ≤1 zone per parcel |
+| `silver.hazard_zone` | 6,422 | `ST_MakeValid` materialised + GIST |
+| `silver.parcel_hazard` | 26,789 | PK `(egrid, source_layer)` |
+| `silver.parcel_hazard_synoptic` | 9,879 | 9,005 surveyed / 874 unknown |
+| `silver.bodenpreis` | 520 | 0/0 sentinel nulled, window materialised |
+| `silver.gemeinde_*` (4) | 115/30/95/2,090 | typed, full year ranges kept |
+| `silver.oereb_extract_sample` | 25 | 0.3% - a sample, not a layer |
+| `silver.parcel_restriction_sample` | 80 | |
+
+The constraints are the point: `CHECK price > 0` so a padding zero can't
+become a price, `PRIMARY KEY (egrid, source_layer)` so the 2.97× hazard
+fan-out can't reach a parcel count, and
+`CHECK (hazard_surveyed = (gefahrenstufe IS NOT NULL))` so
+"surveyed and clear" can never collapse into "never surveyed".
+
 ## Next steps
 
-Bronze is **complete for all five spec layers**, in three access patterns
-(bulk spatial, bulk tabular, per-parcel query). `make bronze` rebuilds the
-whole thing from scratch. That was the stated precondition for gold, so:
-
-1. **Design the gold schema**, checked against all of them at once.
-   Watch: E-GRID vs spatial vs BFS-Nr as join keys; time-series vs
-   snapshot grain; `sk-stat-4`'s 2019-2024 window as the binding
-   constraint on any year join. Parcel-level price is settled - it comes
-   from `bronze.landwertzonen` via `lwz`, not from `bronze.bodenpreise`.
-   For hazard, filter to one `_source_layer` before joining, and keep
-   "graded `keine`" distinct from "outside the surveyed perimeter".
+1. **Build the gold schema** from `docs/gold-schema-design.md`, selecting
+   from `silver.*` rather than bronze. Two fact tables joined on BFS-Nr,
+   plus `gold.parcel_hazard` and `gold.gemeinde_bodenpreis`. `gold.parcel`
+   keys on `egrid` alone (single 2024 vintage).
+   `gold.parcel_restriction` is **deferred** - see below.
+2. **Bulk restriction layers** - `docs/next-bronze-restrictions.md`. The
+   25-parcel ÖREB sample is a POC-scale sample of one API, not the
+   source's ceiling: 7 of 9 themes are bulk-available as WFS, mostly on
+   the already-ingested `oereb_ortsplanung_bauzonen` service.
 
 Optional, same code path as Bauzonen: `ms:landwirt`
 (Landwirtschaftszonen) rounds out the spec's "buildability" question,
 since a parcel outside a Bauzone is currently just absent rather than
 positively classified.
+
+**Known v1 limitation:** no source carries parcel boundary polygons, so a
+parcel takes the zone its representative Point falls in. Measured against
+the ÖREB sample, 5 of 25 parcels have a base zone covering under 99.5% of
+the parcel. Fine for screening, wrong for area shares - fixing it needs
+the Amtliche Vermessung parcel layer.
 
 ## Project layout
 

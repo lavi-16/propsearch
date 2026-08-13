@@ -121,16 +121,25 @@ def load_table(
     return engine
 
 
-def summarise_table(table: str, group_by: str | None = None, label_map: dict | None = None):
-    """Row count and optional group breakdown for a non-spatial bronze table."""
+def summarise_table(
+    table: str,
+    group_by: str | None = None,
+    label_map: dict | None = None,
+    schema: str = SCHEMA,
+):
+    """Row count and optional group breakdown for a non-spatial table.
+
+    `schema` defaults to bronze; the silver build passes "silver" so both
+    layers report the same way rather than growing a second summary helper.
+    """
     engine = get_engine()
     with engine.connect() as conn:
-        total = conn.execute(text(f"SELECT count(*) FROM {SCHEMA}.{table}")).scalar()
-        print(f"\n{SCHEMA}.{table}: {total} rows")
+        total = conn.execute(text(f"SELECT count(*) FROM {schema}.{table}")).scalar()
+        print(f"\n{schema}.{table}: {total} rows")
         if group_by:
             rows = conn.execute(
                 text(
-                    f"SELECT {group_by}, count(*) FROM {SCHEMA}.{table} "
+                    f"SELECT {group_by}, count(*) FROM {schema}.{table} "
                     "GROUP BY 1 ORDER BY 1"
                 )
             ).all()
@@ -140,35 +149,45 @@ def summarise_table(table: str, group_by: str | None = None, label_map: dict | N
             )
 
 
-def summarise(table: str, group_by: str | None = None, label_map: dict | None = None):
-    """Print row count, SRID, geometry types and an optional group breakdown."""
+def summarise(
+    table: str,
+    group_by: str | None = None,
+    label_map: dict | None = None,
+    schema: str = SCHEMA,
+    geom_col: str = GEOM_COL,
+):
+    """Print row count, SRID, geometry types and an optional group breakdown.
+
+    `schema`/`geom_col` default to the bronze convention; silver passes
+    "silver" and "geom".
+    """
     engine = get_engine()
     with engine.connect() as conn:
-        total = conn.execute(text(f"SELECT count(*) FROM {SCHEMA}.{table}")).scalar()
+        total = conn.execute(text(f"SELECT count(*) FROM {schema}.{table}")).scalar()
         srid = (
             conn.execute(
-                text(f"SELECT DISTINCT ST_SRID({GEOM_COL}) FROM {SCHEMA}.{table}")
+                text(f"SELECT DISTINCT ST_SRID({geom_col}) FROM {schema}.{table}")
             )
             .scalars()
             .all()
         )
         nulls = conn.execute(
-            text(f"SELECT count(*) FROM {SCHEMA}.{table} WHERE {GEOM_COL} IS NULL")
+            text(f"SELECT count(*) FROM {schema}.{table} WHERE {geom_col} IS NULL")
         ).scalar()
         geom_types = conn.execute(
             text(
-                f"SELECT GeometryType({GEOM_COL}), count(*) FROM {SCHEMA}.{table} "
+                f"SELECT GeometryType({geom_col}), count(*) FROM {schema}.{table} "
                 "GROUP BY 1 ORDER BY 1"
             )
         ).all()
         invalid = conn.execute(
             text(
-                f"SELECT count(*) FROM {SCHEMA}.{table} "
-                f"WHERE NOT ST_IsValid({GEOM_COL})"
+                f"SELECT count(*) FROM {schema}.{table} "
+                f"WHERE NOT ST_IsValid({geom_col})"
             )
         ).scalar()
 
-        print(f"\n{SCHEMA}.{table}: {total} rows | SRID {srid} | null geom: {nulls}")
+        print(f"\n{schema}.{table}: {total} rows | SRID {srid} | null geom: {nulls}")
         print(
             "  geometry: "
             + ", ".join(f"{t}={n}" for t, n in geom_types)
@@ -178,7 +197,7 @@ def summarise(table: str, group_by: str | None = None, label_map: dict | None = 
         if group_by:
             rows = conn.execute(
                 text(
-                    f"SELECT {group_by}, count(*) FROM {SCHEMA}.{table} "
+                    f"SELECT {group_by}, count(*) FROM {schema}.{table} "
                     "GROUP BY 1 ORDER BY 1"
                 )
             ).all()

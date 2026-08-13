@@ -1,0 +1,24 @@
+-- Silver layer: typed, constrained, corrected.
+--
+-- WHERE THIS DIFFERS FROM BRONZE. Bronze preserves the source verbatim and
+-- carries no primary keys, no CHECK constraints and no declared types --
+-- its tables are created implicitly by to_postgis/to_sql. Silver is where
+-- declared types and constraints enter the project.
+--
+-- The point of the constraints is not tidiness. Each one makes a specific
+-- documented trap UNREACHABLE rather than merely written down:
+--
+--   * silver.parcel        prices are resolved from the inverse `lwz` index,
+--                          and CHECKed > 0 so a padding zero cannot surface
+--   * silver.parcel_hazard PK (egrid, source_layer) so the 2.97x cross-layer
+--                          fan-out cannot leak into a per-parcel count
+--   * ..._hazard_synoptic  CHECK ties hazard_surveyed to gefahrenstufe, so
+--                          "surveyed and clear" can never be collapsed with
+--                          "outside the surveyed perimeter"
+--   * silver.hazard_zone   CHECK keeps Restgefahr off the ordinal scale
+--   * silver.bodenpreis    CHECK > 0 so the 0/0 no-data sentinel cannot be
+--                          read as a price
+--
+-- Reload semantics match bronze: full replace. These are snapshot pulls.
+
+CREATE SCHEMA IF NOT EXISTS silver;

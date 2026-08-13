@@ -2,7 +2,7 @@
         landwertzonen bauzonen gemeindestats bodenpreise gefahrenkarte oereb \
         bronze-landwertzonen bronze-bauzonen bronze-gemeindestats \
         bronze-bodenpreise bronze-gefahrenkarte bronze-oereb \
-        bronze
+        bronze silver test
 
 setup:
 	uv sync
@@ -55,3 +55,13 @@ bronze: landwertzonen bauzonen gemeindestats bodenpreise gefahrenkarte \
         bronze-landwertzonen bronze-bauzonen bronze-gemeindestats \
         bronze-bodenpreise bronze-gefahrenkarte \
         oereb bronze-oereb
+
+# --- bronze -> silver ---
+# Full rebuild: every table is dropped and recreated from bronze. Pure
+# database-to-database, so no data/ pull is needed first.
+silver:
+	uv run python -m propsearch_data.transform.silver
+
+# Read-only assertions against the built silver tables. Run after `silver`.
+test:
+	uv run pytest -q

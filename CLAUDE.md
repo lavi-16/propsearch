@@ -19,6 +19,8 @@ no UI, no scheduling/orchestration, no MCP server. Don't build them.
 make setup       # uv sync
 make discover    # dump WFS GetCapabilities to docs/wfs-capabilities/
 make bronze      # full refresh: pull both sources from WFS and load them
+make silver      # rebuild schema `silver` from bronze (pure DB-to-DB)
+make test        # pytest -- read-only assertions against the built silver
 ```
 
 Individual steps: `make landwertzonen` / `make bauzonen` / `make bodenpreise`, then
@@ -217,13 +219,17 @@ scripts back to the user unrun.
 
 Unknown slugs return HTTP 401, so probing candidates is cheap and safe.
 
-## Bronze/gold sequencing (explicit user decision, 2026-08-13)
+## Bronze → silver → gold sequencing (explicit user decisions)
 
-Bronze tables now; **the gold schema is not to be designed yet**. Shaping a gold table around
-one source in isolation would lock in a shape before it's known what the other four sources
-need to join against. Gold-schema design is its own step, once Landwertzonen plus a couple of
-other bronze sources have landed and can be checked against each other. Do not create
-`parcel_land_value`-style tables ahead of that.
+Original decision (2026-08-13): bronze first, gold not to be designed until several
+sources had landed and could be checked against each other.
+
+**Both later steps are now settled.** Bronze is complete for all five spec layers,
+`docs/gold-schema-design.md` was written against the landed data, and **silver is
+built and tested** — see the silver section above. Gold is the next step and is
+still **not built**: it will be proposed as DDL selecting from `silver.*`, never
+from `bronze.*`, with `gold.parcel` keyed on `egrid` alone (single 2024 vintage)
+and `gold.parcel_restriction` **deferred** pending the bulk WFS ingestion.
 
 Landed so far — all five spec layers now have a bronze source:
 
@@ -257,6 +263,62 @@ Bronze contract, as applied in `propsearch_data/bronze.py`:
 
 Silver should assert types and geometry explicitly rather than trusting these.
 
+## Silver is built — `sql/schema/silver/`, `make silver`
+
+Physical tables from explicit DDL, run by `transform/silver.py` in filename
+order, each file in its own transaction, full-replace like bronze. **Not** views:
+`ST_MakeValid` inside a join predicate defeats the GIST index and *exceeded the
+statement timeout* on this database — repairing once into an indexed table is
+what makes the parcel joins viable at all.
+
+**The constraints are the deliverable.** Each one makes a documented trap
+unreachable rather than merely written down. Don't relax one to make an insert
+pass; a failing CHECK means the source changed and that's the signal.
+
+| Table | Rows | What it pins down |
+|---|---|---|
+| `silver.gemeinde` | 5 | `bfs_nr integer` everywhere (bronze keys it 4 different ways) |
+| `silver.parcel` | 9,879 | PK `egrid`; `lwz` resolved to CHF; `CHECK price > 0` |
+| `silver.zone` | 89 | PK `(bfs_nr, zone_code_norm)` — 79 codes, 89 Gemeinde-pairs |
+| `silver.parcel_zone` | 8,303 | PK `egrid` — point-in-polygon, at most one zone |
+| `silver.hazard_zone` | 6,422 | `ST_MakeValid` materialised + GIST; `CHECK ST_IsValid` |
+| `silver.parcel_hazard` | 26,789 | PK `(egrid, source_layer)` — contains the 2.97× fan-out |
+| `silver.parcel_hazard_synoptic` | 9,879 | `CHECK hazard_surveyed = (gefahrenstufe IS NOT NULL)` |
+| `silver.bodenpreis` | 520 | 0/0 sentinel → NULL; `CHECK price > 0`; window materialised |
+| `silver.gemeinde_*` (4) | 115/30/95/2,090 | typed casts, **full year ranges kept** |
+| `silver.oereb_extract_sample` | 25 | 0.3% — `_sample` is load-bearing |
+| `silver.parcel_restriction_sample` | 80 | — |
+
+Things silver settled that contradict earlier notes here:
+
+- **`gn_kantname` is an authoritative canton-wide zone class** (25 values, 0 nulls,
+  populated even where `gn_kuerzel` is NULL). It collapses the 79 municipal codes —
+  `StB`/`StrB`/`VfSi`/`VFiB` all → "Strassen und Wege innerhalb von Bauzonen". Use it
+  as `zone_class` for cross-Gemeinde comparison; **don't hand-build a crosswalk.**
+  `zone_label` (`gn_gmdname`) stays Gemeinde-specific: `G` is "Gewerbezone" in
+  Ermatingen but "Arbeitszone Gewerbe" in Münsterlingen, one canton class, two labels.
+- **Mechanical zone-code normalisation merges nothing within a Gemeinde** (verified 0
+  cases). Each Gemeinde already spells its codes consistently; the variants are all
+  cross-Gemeinde. `zone_code_norm` is defensive, not corrective.
+- **`markt_ja_nein = 'n'` is NOT a data-absence flag.** All 40 sentinel rows are `'n'`,
+  which makes the inference tempting — but **250 of the 290 `'n'` rows carry real
+  prices**. The only "no data" filter is `minimum = 0 AND maximum = 0`. Filtering rows
+  on `markt_ja_nein` discards 250 valid bands.
+- **The ÖREB 25 are a POC sample, not the source's ceiling.** The *extract endpoint*
+  has no bulk call, but the restriction *data* is bulk WFS for 7 of 9 themes. See
+  `docs/next-bronze-restrictions.md`. `gold.parcel_restriction` is deferred.
+- **Point-based matching costs something measurable.** No parcel polygons exist, so a
+  parcel takes the zone its representative Point lands in. Against the ÖREB oracle:
+  9/25 parcels carry >1 Nutzungsplanung restriction, 5/25 have base-zone coverage
+  <99.5%. Fine for screening, wrong for area shares.
+- **ÖREB overlays are additive, not contradictory.** A parcel has one base zone plus
+  overlays (Gestaltungsplanpflicht, Umgebungsschutzzone, Gefahrenzone…). Comparing
+  *every* `ch.Nutzungsplanung` row against the Bauzonen zone reads as disagreement;
+  the correct check is that the base zone appears **among** them — 25/25.
+
+Tests are read-only assertions against whatever `make silver` last built (`tests/`,
+66 of them). No fixture data: the pilot slice is the thing worth testing.
+
 ## The grounding rule
 
 The gold-layer schema is intentionally unwritten. `src/propsearch_data/models.py` and
@@ -268,7 +330,11 @@ values.
 Confirmed so far:
 - URL pattern `https://ows.geo.tg.ch/geofy_access_proxy/{slug}` is real. Live slugs:
   `datensammelstellen`, `oereb_ortsplanung_bauzonen`, `gewaesserkataster_gewaesser`,
-  `landwertzonen`, `hoheitsgrenzen`
+  `landwertzonen`, `hoheitsgrenzen`, `oereb_gewaesserraum`
+- `oereb_ortsplanung_bauzonen` serves far more than `ms:bau` — also `ms:les`, `ms:gp`,
+  `ms:blp`/`ms:blpline`, `ms:no_*`/`ms:ko_*`, `ms:ueberlagernd`, `ms:schutz`,
+  `ms:weitere` (each with a `_vx` pending-amendment twin). These are the bulk sources
+  for most ÖREB restriction themes — see `docs/next-bronze-restrictions.md`.
 - Layer names are prefixed `ms:` (e.g. `ms:DS_Oereb`)
 - **These services serve GML only** — `OUTPUTFORMAT=application/json` is rejected with
   `InvalidParameterValue`. Read responses with `geopandas.read_file()`, never `r.json()`.

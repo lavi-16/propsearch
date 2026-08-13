@@ -2,6 +2,20 @@
 
 Status: **proposed, not built.** No tables created yet.
 
+> **Update (2026-08-13): silver is built, and the three open decisions below
+> are resolved.** See the "Open decisions — resolved" section at the end.
+> Two things in this document are now superseded:
+>
+> - **`lwz` → CHF is resolved in silver, not gold.** Turning an inverse index
+>   into a magnitude is a source-fidelity correction, which is silver's
+>   contract. `silver.parcel` emits `price_efh_chf_m2` / `price_ewg_chf_m2` /
+>   `price_gewerbe_chf_m2` with `lwz` kept alongside for traceability.
+> - **`gold.parcel_restriction` is deferred**, not part of the next proposal.
+>   Building it from the 80-row sample was ruled out — see below.
+>
+> Everything else here held up against the built data, including every
+> measured figure.
+
 Written once all five spec layers had landed in bronze, which was the
 stated precondition for designing gold against real data rather than
 against assumptions. Every number below is measured from the landed pilot
@@ -135,18 +149,48 @@ absent restriction there would read as "no restriction" when it means "not
 fetched". Keep it a separate table whose sparsity is self-evident, and
 record `extract_fetched_at` per parcel.
 
-## Open decisions
+## Open decisions — resolved
 
-1. **Silver first, or gold straight off bronze?** Three cleanups are
-   genuinely silver's: zone-code normalisation, the Bodenpreise zero
-   sentinel, and `ST_MakeValid` on the 84 invalid hazard geometries
-   (all `Ring Self-intersection`). Building gold directly off bronze means
-   embedding those fixes in gold's DDL, where they are harder to test.
-2. **Parcel geometry.** Landwertzonen is a Point per parcel; there is no
-   parcel polygon in any landed source. Anything needing parcel area or
-   true overlap needs the Amtliche Vermessung parcel layer, not yet
-   ingested.
-3. **Vintage.** Every parcel-level source is a single 2024 snapshot, so
-   `gold.parcel` has no time dimension. If a second vintage ever lands,
-   this becomes a slowly-changing dimension and the PK changes. Worth
-   deciding now whether to pre-emptively key on `(egrid, vintage)`.
+1. **Silver first, or gold straight off bronze?** → **Silver first, built.**
+   All three cleanups live in `sql/schema/silver/` as declared constraints
+   rather than prose, so each trap is now unreachable rather than merely
+   documented: prices are `CHECK (… > 0)`, the hazard fan-out is prevented by
+   `PRIMARY KEY (egrid, source_layer)`, and surveyed-vs-unknown is pinned by
+   `CHECK (hazard_surveyed = (gefahrenstufe IS NOT NULL))`. Gold selects from
+   `silver.*`.
+
+2. **Parcel geometry.** → **Accepted as a v1 limitation, now quantified.**
+   Still a Point per parcel, no polygon in any landed source. Measured
+   against the ÖREB sample, which does know true parcel geometry:
+
+   - **9 of 25** parcels carry more than one `ch.Nutzungsplanung` restriction
+   - **5 of 25** have a base zone covering less than 99.5% of the parcel
+
+   So roughly a fifth to a third of parcels straddle a zone boundary, and the
+   point join picks one and reports it as *the* zone. Acceptable for
+   screening; wrong for area shares or buildable envelope. The fix is the
+   Amtliche Vermessung parcel layer, deliberately out of scope for v1.
+
+3. **Vintage.** → **`egrid` alone, no composite key.** Every parcel-level
+   source is `jahr` = 2024. `silver.parcel` carries `vintage` as a plain
+   column and a test asserts it stays single-valued, so a second vintage
+   landing will fail loudly rather than silently duplicating parcels — which
+   is the moment to revisit `(egrid, vintage)`.
+
+## What silver established that changes the gold proposal
+
+- **`gn_kantname` is an authoritative canton-wide zone class** — 25 values,
+  zero nulls, populated even where `gn_kuerzel` is NULL. It collapses the 79
+  municipal codes (`StB`/`StrB`/`VfSi`/`VFiB` → "Strassen und Wege innerhalb
+  von Bauzonen"). This is the crosswalk this document assumed did not exist.
+  `gold.parcel` should carry `zone_class` from it, not a hand-built mapping.
+- **`markt_ja_nein = 'n'` is not a data-absence flag.** 250 of the 290 `'n'`
+  rows carry real prices. The only correct "no data" filter is
+  `minimum = 0 AND maximum = 0`. Surfacing `is_market_based` as a confidence
+  flag is right; filtering rows on it would discard 250 valid bands.
+- **`gold.parcel_restriction` is deferred.** The 25-parcel ÖREB sample is a
+  POC-scale sample of one API, *not* the source's coverage ceiling: the
+  extract endpoint has no bulk call, but the restriction data is bulk-
+  available as WFS for 7 of the 9 observed themes. Building a gold table from
+  0.3% coverage was rejected; it waits for that ingestion. See
+  `docs/next-bronze-restrictions.md`.

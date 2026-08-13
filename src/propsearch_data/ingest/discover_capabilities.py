@@ -35,6 +35,9 @@ ENDPOINTS = {
     "ng_gefahrenkarte_wasser": f"{_BASE}/ng_gefahrenkarte_wasser",
     "ng_gefahrenkarte_rutschungen": f"{_BASE}/ng_gefahrenkarte_rutschungen",
     "ng_gefahrenkarte_erhebungsgebiet": f"{_BASE}/ng_gefahrenkarte_erhebungsgebiet",
+    # Confirmed live while scoping the silver layer. Serves ms:raum, the
+    # bulk source for the ch.Gewaesserraum OEREB theme.
+    "oereb_gewaesserraum": f"{_BASE}/oereb_gewaesserraum",
 }
 
 
