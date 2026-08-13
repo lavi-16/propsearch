@@ -16,14 +16,25 @@ from owslib.wfs import WebFeatureService
 
 OUTPUT_DIR = Path(__file__).resolve().parents[3] / "docs" / "wfs-capabilities"
 
-# TODO: confirm/complete this list. One endpoint confirmed so far; the rest
-# need to be found via map.geo.tg.ch, shop.geo.tg.ch, or geodienste.ch -
-# see README.md for how.
+_BASE = "https://ows.geo.tg.ch/geofy_access_proxy"
+
+# Confirmed live 2026-08-13. Unknown slugs answer "Access Denied" / HTTP 401,
+# so adding a candidate here is a cheap way to test it.
+#
+# The Gefahrenkarte layers are served as WFS (not WMS-only, as originally
+# assumed), so they fit this same code path. Slug pattern is
+# `ng_gefahrenkarte_<process>` -- found via the canton's geoservice listing.
 ENDPOINTS = {
-    "oereb_datensammelstellen": "https://ows.geo.tg.ch/geofy_access_proxy/datensammelstellen",
-    # "bauzonen": "TODO",
-    # "gefahrenkarte": "TODO",   # likely WMS, not WFS - may need a separate helper
-    # "landwertzonen": "TODO",
+    "oereb_datensammelstellen": f"{_BASE}/datensammelstellen",
+    "oereb_ortsplanung_bauzonen": f"{_BASE}/oereb_ortsplanung_bauzonen",
+    "gewaesserkataster_gewaesser": f"{_BASE}/gewaesserkataster_gewaesser",
+    "landwertzonen": f"{_BASE}/landwertzonen",
+    "hoheitsgrenzen": f"{_BASE}/hoheitsgrenzen",  # ms:Gemeinden_Layer -> BFS-Nr lookup
+    # Naturgefahren / Gefahrenkarte -- the spec's "Hazard" layer.
+    "ng_gefahrenkarte_synoptisch": f"{_BASE}/ng_gefahrenkarte_synoptisch",
+    "ng_gefahrenkarte_wasser": f"{_BASE}/ng_gefahrenkarte_wasser",
+    "ng_gefahrenkarte_rutschungen": f"{_BASE}/ng_gefahrenkarte_rutschungen",
+    "ng_gefahrenkarte_erhebungsgebiet": f"{_BASE}/ng_gefahrenkarte_erhebungsgebiet",
 }
 
 

@@ -1,109 +1,88 @@
 """
-Discover and pull Thurgau Landwertzonen (land value zones) via WFS.
+Bronze ingestion for Thurgau Landwertzonen (land value zones) via WFS.
 
-WHY THIS NEEDS TO RUN FROM YOUR OWN NETWORK, NOT CLAUDE'S SANDBOX
-------------------------------------------------------------------
-Claude's fetch tool honors ows.geo.tg.ch's robots.txt, which asks automated
-crawlers to stay out. That's a polite-crawler convention, not an access
-control -- WFS servers are built to be called by scripts and GIS software,
-so it's very likely this just works from your machine or from Claude Code
-running with real network access. If it *doesn't* work even from there,
-that would mean there's an actual IP/referrer restriction, which is a
-different problem with a different fix (e.g. going through geodienste.ch
-or requesting access via agi@tg.ch).
+Everything below is CONFIRMED against the live service (2026-08-13), not
+guessed. What was verified, and what it corrected:
 
-WHAT'S CONFIRMED VS. GUESSED
-------------------------------------------------------------------
-Confirmed: the URL pattern ows.geo.tg.ch/geofy_access_proxy/{slug} is real
--- I saw it working for oereb_ortsplanung_bauzonen (zoning) and
-gewaesserkataster_gewaesser (water), both live services.
+- Slug `landwertzonen` is real. The service answers at
+  ows.geo.tg.ch/geofy_access_proxy/landwertzonen from a normal network.
+- The service serves GML only. `application/json` is rejected with
+  InvalidParameterValue, so the old json/r.json() path could never work.
+  We request GML and parse via geopandas instead.
+- Three feature types exist, not one (see TYPENAMES).
+- `gemcode` is the BFS-Nr. Confirmed by cross-referencing the
+  hoheitsgrenzen WFS (ms:Gemeinden_Layer, field `gemeinde_bfsnr`) --
+  e.g. Kreuzlingen = 4671 in both. This resolves the "Gemeinde-ID
+  reconciliation" open question in docs/spec.md for this layer.
+- `gs_egris_egrid` carries the federal E-GRID parcel identifier on every
+  feature (no nulls in sample). Land value therefore joins to a parcel
+  directly on EGRID -- no point-in-polygon step needed for this layer.
+- Geometry is POINT, one per parcel -- not zone polygons, as the spec
+  assumed. Plan joins accordingly.
+- Native CRS is EPSG:2056 (LV95), as required.
 
-Guessed: the slug for Landwertzonen. I don't have it confirmed, so this
-script tries several plausible candidates and tells you which one (if any)
-actually answers, rather than assuming.
-
-Also approximate: PILOT_BBOX below is a rough guess at the Bodensee-front
-cluster (Kreuzlingen/Taegerwilen/Bottighofen/Muensterlingen/Ermatingen) --
-verify it against a real coordinate before trusting results.
+Selection is by BFS-Nr via a server-side attribute filter, not by bounding
+box. The previous PILOT_BBOX was wrong: it started at E 2740000, roughly
+5 km east of Muensterlingen, so it covered none of the pilot cluster and
+returned 268 unrelated features. Filtering on gemcode is exact and can't
+drift like that.
 """
 
-import json
-import requests
+from pathlib import Path
 
-BASE = "https://ows.geo.tg.ch/geofy_access_proxy/{slug}"
+from propsearch_data.ingest import wfs
 
-# Candidate service slugs, based on the naming pattern seen in other
-# confirmed TG WFS services. None of these are verified -- that's the
-# point of find_working_slug() below.
-CANDIDATE_SLUGS = [
-    "landwertzonen",
-    "landwertzonen_liegenschaften",
-    "steuerverwaltung_landwertzonen",
-    "sv_landwertzonen",
+SERVICE_URL = "https://ows.geo.tg.ch/geofy_access_proxy/landwertzonen"
+
+# Confirmed against hoheitsgrenzen WFS ms:Gemeinden_Layer; all five are
+# Bezirk Kreuzlingen.
+PILOT_BFS = {
+    "Bottighofen": 4643,
+    "Ermatingen": 4646,
+    "Kreuzlingen": 4671,
+    "Münsterlingen": 4691,
+    "Tägerwilen": 4696,
+}
+
+TYPENAMES = [
+    "ms:Landwertzonen_Bauz",  # Landwertzonen in Bauzonen
+    "ms:Landwertzonen_aus_Bau",  # ... ausserhalb Bauzonen
+    "ms:Landwertzonen_Strasse",  # ... Strassen und Sonstige
 ]
 
-# EPSG:2056 (LV95) bbox roughly covering the pilot Gemeinden -- APPROXIMATE,
-# widen or correct against a known point (e.g. a Kreuzlingen address) first.
-PILOT_BBOX = "2740000,1273000,2755000,1281000"
+OUTPUT_DIR = Path(__file__).resolve().parents[3] / "data" / "bronze"
 
 
-def find_working_slug():
-    for slug in CANDIDATE_SLUGS:
-        url = BASE.format(slug=slug)
-        params = {"SERVICE": "WFS", "VERSION": "2.0.0", "REQUEST": "GetCapabilities"}
-        try:
-            r = requests.get(url, params=params, timeout=15)
-            if r.status_code == 200 and b"WFS_Capabilities" in r.content[:300]:
-                print(f"working slug found: {slug}")
-                return slug, url
-            print(f"  {slug}: HTTP {r.status_code}, not a WFS capabilities doc")
-        except requests.RequestException as e:
-            print(f"  {slug}: {e}")
-    return None, None
-
-
-def describe_feature_type(base_url):
-    params = {"SERVICE": "WFS", "VERSION": "2.0.0", "REQUEST": "DescribeFeatureType"}
-    r = requests.get(base_url, params=params, timeout=15)
-    r.raise_for_status()
-    print(r.text[:3000])
-    return r.text
-
-
-def get_features(base_url, typename):
-    params = {
-        "SERVICE": "WFS",
-        "VERSION": "2.0.0",
-        "REQUEST": "GetFeature",
-        "TYPENAMES": typename,
-        "BBOX": f"{PILOT_BBOX},EPSG:2056",
-        "OUTPUTFORMAT": "application/json",
-    }
-    r = requests.get(base_url, params=params, timeout=30)
-    r.raise_for_status()
-    return r.json()
+def pilot_filter() -> str:
+    return wfs.property_equals_any("gemcode", sorted(PILOT_BFS.values()))
 
 
 if __name__ == "__main__":
-    slug, base_url = find_working_slug()
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    fes = pilot_filter()
+    print(f"Pilot Gemeinden: {', '.join(f'{n} ({b})' for n, b in PILOT_BFS.items())}\n")
 
-    if not base_url:
-        print("\nNone of the guessed slugs worked. Reliable fallback:")
-        print("  1. Open map.geo.tg.ch, switch to topic 'ech'")
-        print("  2. Turn on the Landwertzonen layer")
-        print("  3. Open browser dev tools -> Network tab")
-        print("  4. Look for the actual WFS/WMS request the viewer makes")
-        print("     -- that URL contains the real service slug + layer names.")
-        raise SystemExit(1)
+    for typename in TYPENAMES:
+        expected = wfs.count(SERVICE_URL, typename, fes)
+        gdf = wfs.fetch(SERVICE_URL, typename, fes, work_dir=OUTPUT_DIR)
+        short = typename.split(":")[-1]
 
-    print("\n--- DescribeFeatureType output (real field names) ---")
-    describe_feature_type(base_url)
+        if gdf.empty:
+            print(f"[warn] {short}: no features returned\n")
+            continue
 
-    # After reading the XSD printed above, set the real typename, e.g.:
-    # typename = "ms:landwertzonen_liegenschaften_f"
-    typename = "REPLACE_WITH_REAL_TYPENAME_FROM_XSD_ABOVE"
+        if expected.isdigit() and int(expected) != len(gdf):
+            raise RuntimeError(
+                f"{short}: server reported {expected} features, fetched {len(gdf)}"
+            )
 
-    geojson = get_features(base_url, typename)
-    with open("landwertzonen_pilot.geojson", "w") as f:
-        json.dump(geojson, f, indent=2)
-    print(f"\nSaved {len(geojson.get('features', []))} features to landwertzonen_pilot.geojson")
+        out_file = OUTPUT_DIR / f"{short.lower()}_pilot.gpkg"
+        gdf.to_file(out_file, driver="GPKG", layer=short.lower())
+
+        per_gemeinde = gdf["gemcode"].value_counts().sort_index()
+        bfs_to_name = {v: k for k, v in PILOT_BFS.items()}
+        breakdown = ", ".join(
+            f"{bfs_to_name.get(code, code)}={n}" for code, n in per_gemeinde.items()
+        )
+        print(f"[ok] {short}: {len(gdf)} features -> {out_file}")
+        print(f"     CRS={gdf.crs}  {breakdown}\n")
