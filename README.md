@@ -44,12 +44,32 @@ Landed so far, **bronze only**, across the five pilot Gemeinden:
 | `bronze.gemeinde_finanzkennzahlen` | 30 | data.tg.ch `sk-stat-4` | Gemeinde context |
 | `bronze.gemeinde_bevoelkerung` | 95 | data.tg.ch `sk-stat-56` | Gemeinde context |
 | `bronze.gemeinde_bevoelkerung_alter` | 2,090 | data.tg.ch `sk-stat-58` | Gemeinde context |
+| `bronze.bodenpreise` | 520 | data.tg.ch `dfs-sv-1` | Land value (Gemeinde CHF/m²) |
 | `bronze.oereb_extract` | 25 | ÖREB webservice | Restrictions |
 | `bronze.oereb_restriction` | 80 | (unnested from above) | Restrictions |
 
 ÖREB is a **per-parcel** service (~175 KB/parcel, no bulk call), so it is
 ingested as a deterministic sample of 5 test parcels per Gemeinde rather
 than a full pull.
+
+Two sources carry CHF/m², at different grains:
+
+- **`bronze.landwertzonen` prices the parcel.** Alongside the zone code it
+  carries `efh_landwertzone1..7`, `ewg_landwertzone1..7` and
+  `gewerbe_industrie` - parcel-precise land values produced for the
+  Steuerverwaltung by Wüest Partner. `lwz` (1-7) is the **index** picking
+  which band applies, and it runs **inverse**: 1 is the priciest zone.
+  So the EFH price is
+  `(ARRAY[efh_landwertzone1,...,efh_landwertzone7])[lwz::int]`, not `lwz`
+  itself. Don't average `lwz` - resolve it to CHF first.
+- **`bronze.bodenpreise` gives Gemeinde-level bands and history.** Read the
+  caveats in `discover_bodenpreise.py` first: rows are six-year trailing
+  windows rather than spot prices, there is no median column (only
+  quartile bounds), zero means "no data", and its 8 coarse zone categories
+  do **not** map onto the 79 municipal zone codes in `bronze.bauzonen`.
+  The Schätzer-Handbuch PDF attached to the dataset does not supply that
+  crosswalk - but nothing needs it, since parcel pricing goes through
+  Landwertzonen.
 
 The gold schema is deliberately not designed yet - see "Next steps".
 
@@ -86,7 +106,8 @@ precondition for designing the gold schema, so:
 1. **Design the gold schema**, checked against all of them at once.
    Watch: E-GRID vs spatial vs BFS-Nr as join keys; time-series vs
    snapshot grain; `sk-stat-4`'s 2019-2024 window as the binding
-   constraint on any year join.
+   constraint on any year join. Parcel-level price is settled - it comes
+   from `bronze.landwertzonen` via `lwz`, not from `bronze.bodenpreise`.
 2. Bronze for **Gefahrenkarte** (hazard). Endpoints are now confirmed and
    are WFS, so they fit the existing code path - slugs
    `ng_gefahrenkarte_synoptisch` / `_wasser` / `_rutschungen` /

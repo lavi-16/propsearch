@@ -21,7 +21,7 @@ make discover    # dump WFS GetCapabilities to docs/wfs-capabilities/
 make bronze      # full refresh: pull both sources from WFS and load them
 ```
 
-Individual steps: `make landwertzonen` / `make bauzonen` (WFS → `data/bronze/*.gpkg`), then
+Individual steps: `make landwertzonen` / `make bauzonen` / `make bodenpreise`, then
 `make bronze-landwertzonen` / `make bronze-bauzonen` (GPKG → Postgres). Fetch and load are
 separate so you can iterate on the load without re-hitting the WFS.
 
@@ -45,6 +45,62 @@ Reachable from the shell, contrary to the original README note. 447 datasets.
   cross-dataset join by year.
 - Tabular sources land via `bronze.load_table()` (to_sql), not `bronze.load()` (to_postgis).
   `bfs_nr_gemeinde` stays text, so joining to the spatial tables needs an explicit `::int`.
+
+## Bodenpreise (`dfs-sv-1`) — Gemeinde-level CHF context
+
+`ingest/discover_bodenpreise.py`. Steuerverwaltung TG, 8,294 rows canton-wide 2012–2024;
+520 in the pilot — a **complete grid** of 5 Gemeinden × 13 years × 8 zone categories, no
+nulls. CHF/m² bands for unbuilt, serviced building land, per Gemeinde × zone category × year.
+
+**This is not the parcel-level price path** — `bronze.landwertzonen` already carries CHF/m²
+per parcel (see below). Use `dfs-sv-1` for Gemeinde-level context, historical trend, and as a
+cross-check on parcel values; not as the primary way to price a parcel.
+
+- **Six-year trailing window, not a spot price.** The 2024 row covers the Bemessungsperiode
+  2017-01-01 → 2023-12-31. Consecutive years overlap heavily, so the series is smoothed by
+  construction and adjacent-year deltas are not market moves. Some series repeat verbatim
+  across two years.
+- **There is no median column.** The dataset description explains the Zentralwert at length
+  and defines `minimum`/`maximum` as the quartiles around it (deciles where a quartile would
+  breach the effective bound) — but only `minimum` and `maximum` are published. `(min+max)/2`
+  does **not** recover the median; the bounds are quantiles.
+- **Zero is a "no data" sentinel, not a price.** 40 of 520 pilot rows have
+  `minimum = maximum = 0`, every one with `markt_ja_nein = 'n'`; no `'j'` row is ever zero.
+- `markt_ja_nein` flags a sample of ≥4 transactions. The pilot is 230 `'j'` / 290 `'n'` —
+  **most cells are thin**, so `'n'` rows are indicative, not market prices.
+- **`bauzone` is NOT the zone code in `bronze.bauzonen`.** This dataset uses 8 coarse
+  tax-valuation categories (`1 Kern`, `2 Dorf`, `3 MFH`, `4 EFH`, `5 W+G`, `6 Gewerbe`,
+  `7 Industrie`, `8 Weiler`); `bronze.bauzonen` carries 79 distinct municipal codes in the
+  pilot alone (`W80`, `WA105`, `W 1.6`, `D`, `StB`…), not even normalised between Gemeinden
+  (`W1.6` vs `W 1.6`, `FH` vs `Fh`, `oeBA` vs `OeBA`). No shared key, no published crosswalk —
+  the Schätzer-Handbuch PDF attached to the dataset does **not** contain one (checked; it is
+  valuation methodology and never mentions these categories). So `dfs-sv-1` joins cleanly on
+  (BFS-Nr, jahr) but not to a zone polygon. This is no longer blocking, since parcel pricing
+  goes through Landwertzonen instead.
+
+## Landwertzonen carries parcel-level CHF/m² — `lwz` is an index, not a rank
+
+`bronze.landwertzonen` is **not** a rank-only classification. It carries 15 price columns:
+`efh_landwertzone1..7`, `ewg_landwertzone1..7` (both CHF/m²) and `gewerbe_industrie`.
+Per the Schätzer-Handbuch §2, these are *parzellenscharfe Baulandpreise* produced for the
+Steuerverwaltung by Wüest Partner, in three use classes — **EWG** (dense residential: MFH,
+Stockwerkeigentum), **EFH** (detached housing), **Gewerbe/Industrie** (no residential share).
+
+**`lwz` (1–7) is the index selecting which band applies to that parcel**, so the price is
+`(ARRAY[efh_landwertzone1, …, efh_landwertzone7])[lwz::int]`. It is an **inverse** ordinal:
+**1 is the priciest zone**, 7 the cheapest. Verified across all 9,879 pilot rows — `lwz` is
+integral 1–7 (76 nulls) and `zone1 ≥ zone2 ≥ … ≥ zone7` holds with zero violations.
+
+That inversion is why a naive `avg(lwz)` looks uncorrelated with price. Don't average `lwz`;
+resolve it to CHF first.
+
+Resolved per-Gemeinde EFH means land inside the matching `dfs-sv-1` 2024 band for 4 of 5
+pilot Gemeinden. The exception is Münsterlingen (686 vs 852–1113) — which is exactly the cell
+flagged `markt_ja_nein = 'n'` (thin sample). Treat that as a consistency check, not proof: it
+compares a mean of parcel values against quartile bounds from a different method and vintage.
+
+So the two sources are complementary: **Landwertzonen prices the parcel** (direct on E-GRID,
+no spatial join needed), `dfs-sv-1` gives Gemeinde-level bands and history.
 
 ## ÖREB webservice — `ingest/oereb.py`
 
@@ -147,6 +203,7 @@ Landed so far — all five spec layers now have a bronze source:
 | `bronze.gemeinde_finanzkennzahlen` | 30 | data.tg.ch `sk-stat-4` | bulk, tabular |
 | `bronze.gemeinde_bevoelkerung` | 95 | data.tg.ch `sk-stat-56` | bulk, tabular |
 | `bronze.gemeinde_bevoelkerung_alter` | 2,090 | data.tg.ch `sk-stat-58` | bulk, tabular |
+| `bronze.bodenpreise` | 520 | data.tg.ch `dfs-sv-1` | bulk, tabular |
 | `bronze.oereb_extract` | 25 | ÖREB webservice | **per-parcel query** |
 | `bronze.oereb_restriction` | 80 | (unnested from above) | — |
 
@@ -202,6 +259,9 @@ Resolved spec open questions (update `docs/spec.md` as these land):
 - **Parcel resolution** — features carry `gs_egris_egrid`, the federal E-GRID parcel ID, with
   no nulls. Land value joins to a parcel directly on EGRID; no point-in-polygon needed there.
   Note the geometry is a **Point per parcel**, not zone polygons as the spec assumed.
+- **Land value in CHF** — carried per parcel by `bronze.landwertzonen` itself
+  (`efh_landwertzone1..7` / `ewg_landwertzone1..7` / `gewerbe_industrie`, selected by `lwz`),
+  so no zone-code crosswalk is needed to price a parcel.
 
 Pilot Gemeinden (verified, all Bezirk Kreuzlingen): Bottighofen 4643, Ermatingen 4646,
 Kreuzlingen 4671, Münsterlingen 4691, Tägerwilen 4696.
@@ -212,7 +272,7 @@ The two layers inspected so far do *not* share a join key, so there is no single
 
 | Layer | Geometry | Key | Join |
 |---|---|---|---|
-| `landwertzonen` (`ms:Landwertzonen_*`) | Point, one per parcel | `gs_egris_egrid`, `gemcode` | direct on E-GRID |
+| `landwertzonen` (`ms:Landwertzonen_*`) | Point, one per parcel | `gs_egris_egrid`, `gemcode` | direct on E-GRID (carries CHF/m², see above) |
 | `oereb_ortsplanung_bauzonen` (`ms:bau`) | Polygon | no E-GRID; `t_id` is `<bfs>_<id>` | spatial (point-in-polygon) |
 
 In `bronze.landwertzonen`, `gs_egris_egrid` is **unique across all 9,879 rows** — the three
