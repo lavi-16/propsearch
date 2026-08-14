@@ -34,6 +34,13 @@ Ingest modules import from the package, so run them with `-m`
 
 Reachable from the shell, contrary to the original README note. 447 datasets.
 
+- **A dataset resolving in the catalogue does NOT mean it has data.** Before treating any
+  data.tg.ch ID as a source, check `has_records` is true and `/records?limit=1` returns a
+  non-empty `results`. `sk-stat-113` (GWR) has a title, a long description, keywords, a
+  licence and a publisher — and `has_records: false`, `records_count: 0`, zero fields, zero
+  attachments; both `/records` and `/exports/json` return empty. It is a **pointer to a
+  federal source**, not a copy of one. A 200 from `/catalog/datasets/{id}` proves only that
+  the metadata record exists. Expect this again on other `sk-stat-*` IDs.
 - Use `/api/explore/v2.1/catalog/datasets/{id}/exports/json`, **not** `/records` — `/records`
   caps at `limit=100` with an offset ceiling; `exports` streams the whole filtered result.
 - Filter with ODSQL via `where`.
@@ -136,6 +143,88 @@ This is what ÖREB can't answer (see the ÖREB section): actual grading, not a p
   `ms:Hinweise_auf_bestehende_Gefahrenkarten`, `ms:technische_berichte_gefahrenkartierung`)
   are survey extents, not gradings — deliberately not ingested.
 
+## GWR (`bronze.gwr_*`) — the building layer, and a new grain
+
+`ingest/madd.py` + `ingest/discover_gwr.py`. The federal Gebäude- und Wohnungsregister:
+11,217 buildings and 11,489 entrances in the pilot, from the **BFS MADD public download**
+`https://public.madd.bfs.admin.ch/tg.zip` — no auth, ~35 MB, refreshed daily.
+
+**Not from data.tg.ch.** `sk-stat-113` looks like the obvious route and is an empty stub —
+see the data.tg.ch section above for the standing check that came out of it.
+
+**Not from the Kanton TG WFS either,** though `geofy_access_proxy/gwr` is live and serves
+`ms:gwr_gebaeude` with native Point geometry, `egrid` and `grundstuecksnummer`. Three
+reasons, the first serious:
+
+- **`gemeindename` is truncated to 10 characters, and the layer carries no BFS-Nr at all.**
+  So `property_equals_any()` — the established selection pattern — silently returns a
+  fraction of a Gemeinde: `Bottighofen` → **18** hits vs `Bottighofe*` → 886; `Kreuzlingen`
+  → **159** vs `Kreuzlinge*` → 5,334; `Münsterlingen` → **32** vs `Münsterlin*` → 1,352.
+  `Ermatingen` and `Tägerwilen` are exactly 10 characters and work fine, which makes the
+  failure look like a data gap in the other three rather than a systematic bug. Same class
+  as the `PILOT_BBOX` miss. If this layer is ever used, filter with `property_like_any()`
+  on a prefix — there is no BFS column to fall back to.
+- Attributes are German labels (`Gebäude ohne Wohnnutzung`), not the GWR numeric codes, so
+  the published code table can't be applied.
+- No dwelling level.
+
+**The parcel join is an attribute join, not a spatial one.** The building record carries
+`EGRID` in the same federal form as `bronze.landwertzonen.gs_egris_egrid`. Measured against
+the built `silver.parcel`: **10,344 of 11,217 (92.2%)** join directly, so the spec's 90%
+acceptance criterion is met with no point-in-polygon step. Of the 873 that don't, 383 carry
+no EGRID at all and 490 sit on a parcel outside the pilot's Landwertzonen set. 6,641 of
+9,879 pilot parcels (67.2%) carry at least one building.
+
+**EGID is a new grain, one level BELOW the parcel.** 2,435 pilot parcels carry more than one
+building, up to **29**. Joining `gwr_gebaeude` to the 9,879-row parcel spine multiplies it —
+the same hazard as the Gefahrenkarte 2.97× fan-out. Aggregate first, or keep it as a
+separate fact.
+
+**`gwr_eingang` resolves address → parcel without a geocoder** (for the pilot). 10,286
+distinct `(street, house number, PLZ)` keys, and **zero** of them resolve to conflicting
+parcels; 9,803 (95.3%) resolve to a single EGRID present in `silver.parcel`. `DKODE`/`DKODN`
+give the LV95 coordinate on 97.7% of rows, so a table lookup replaces both the geocoder and
+the ÖREB `getegrid` round-trip inside these five Gemeinden. A geocode cache is still needed,
+but only for the residual: new construction not yet in the register, non-official entrances,
+the 1.1% with no house number, and anything outside the pilot. `EGAID` (100% populated) is
+the federal address ID to key that cache on.
+
+**`GSTAT` must be filtered before anything is shown as current.** The pilot holds 10,392
+existing (`1004`), **700 demolished (`1007`)** and 125 projected/approved/under construction
+(`1001`/`1002`/`1003`/`1008`). Bronze keeps all of them on purpose. A demolished building's
+row looks entirely normal — every other column is populated exactly as it was the day it
+came down — so surfacing one as a parcel's current state is a real correctness bug, not a
+cosmetic one.
+
+**It is a raw register, not statistics.** BFS states the data is "not corrected, imputed, or
+statistically supplemented". Pilot fill rates: `GBAUJ` 80.7%, `GBAUP` 90.6%, `GAREA` 97.3%,
+`GASTW` 67.5%, `GANZWHG` 62.7%, `GENH1` 70.3%, `GEBF` 6.6%, `GVOL` 3.5%. A null means
+unrecorded — not zero, and not "no such feature". Model it the way `hazard_surveyed` already
+distinguishes measured absence from unknown.
+
+**Codes stay raw; `bronze.gwr_kodes` (405 rows) is the publisher's own lookup**, keyed
+`(cecodid, cmerkm)` — unique on those two together, and `cmerkm` is the *attribute* the code
+belongs to, not a category. **Join on both columns**: `857` is defined five times over, once
+each for `GVOLSCE`, `GWAERSCEH1`, `GWAERSCEH2`, `GWAERSCEW1` and `GWAERSCEW2`, so joining on
+`cecodid` alone fans out. Decoding happens in silver — the `gn_kantname` precedent, where the
+source publishes its own classification and a hand-built crosswalk is the wrong move.
+
+Other traps:
+- The CSVs are **tab-delimited** with a utf-8 BOM, despite the `.csv` extension.
+- Everything is read as `str`. `GEBNR`/`LPARZ` hold values like `1/721` and `1/.146`.
+- **Ignore `buildings.geojson` / `entrances.geojson` / `data.sqlite` in the zip.** The
+  geojson is Points at the same coordinates but a renamed, energy-focused *subset* — no
+  `EGRID`, no `GBAUJ`, no `GAREA`, no `GANZWHG`. The CSVs are the complete record.
+- `eingang` and `wohnung` carry **no Gemeinde column** — filter them on the pilot `EGID` set.
+- `GGDENR` is text (as every MADD column is), so the pilot filter compares strings — the
+  `bfs_nr_gemeinde` type trap in a new place.
+- `discover_gwr.py` asserts a **range**, not an exact count: `GEXPDAT` is stamped daily and
+  buildings come and go, so `== 11217` would fail on a routine rerun because the data moved.
+  What is exact is that no Gemeinde may come back empty.
+
+`bronze.gwr_wohnung` (22,249 pilot rows, PK `(EGID, EWID)` — per-dwelling area, rooms,
+floor) is **not landed**; the fetch already reads the file, so adding it is one load script.
+
 ## ÖREB webservice — `ingest/oereb.py`
 
 Base `https://map.geo.tg.ch/services/oereb/`, version `extract-2.0`, 32 themes. This is the
@@ -180,6 +269,9 @@ config on top of them, not a new copy of the fetch loop.
 - `ingest/opendata.py` — `export()` / `export_frame()`, `bfs_in()`, `field_types()`
 - `ingest/oereb.py` — `extract()` / `extract_many()`, `get_egrid_by_coordinate()` /
   `_by_number()`, `topics()`
+- `ingest/madd.py` — `download()` (streamed, cached), `read_csv()` (tab-delimited,
+  utf-8-sig, all-string). Bulk zip: no server-side filter, so the whole canton comes down
+  and the pilot slice is cut locally.
 - `bronze.py` — `tag_provenance()`, `combine()`, `load()` (spatial), `load_table()`
   (non-spatial, with `dtype` passthrough for JSONB), `summarise()` / `summarise_table()`
 
@@ -236,6 +328,15 @@ The remaining open work is the bulk WFS restrictions pull
 (`docs/next-bronze-restrictions.md`), which is what unblocks
 `gold.parcel_restriction`.
 
+**Bronze has since been extended past the five spec layers.**
+`docs/gebaeudedaten-bronze-specs-en.md` adds three building-level sources;
+the first, **GWR, is landed** (`bronze.gwr_gebaeude` / `_eingang` / `_kodes`
+— see the GWR section above). Sonnendach and SonBase are not started.
+GWR has **no silver or gold modelling yet**, and three things must be
+settled before it gets any: the `EGID` fan-out (2,435 pilot parcels carry
+more than one building), the `GSTAT` filter (700 demolished buildings look
+identical to live ones), and null-means-unrecorded on a raw register.
+
 Landed so far — all five spec layers now have a bronze source:
 
 | Table | Rows | Source | Access pattern |
@@ -248,12 +349,21 @@ Landed so far — all five spec layers now have a bronze source:
 | `bronze.gemeinde_bevoelkerung_alter` | 2,090 | data.tg.ch `sk-stat-58` | bulk, tabular |
 | `bronze.bodenpreise` | 520 | data.tg.ch `dfs-sv-1` | bulk, tabular |
 | `bronze.gefahrenkarte` | 6,422 | 3 × `ng_gefahrenkarte_*` WFS | bulk, spatial (MultiPolygon) |
+| `bronze.gwr_gebaeude` | 11,217 | BFS MADD `tg.zip` | bulk zip, spatial (Point) |
+| `bronze.gwr_eingang` | 11,489 | BFS MADD `tg.zip` | bulk zip, tabular |
+| `bronze.gwr_kodes` | 405 | BFS MADD `tg.zip` | bulk zip, tabular |
 | `bronze.oereb_extract` | 25 | ÖREB webservice | **per-parcel query** |
 | `bronze.oereb_restriction` | 80 | (unnested from above) | — |
 
 Bronze contract, as applied in `propsearch_data/bronze.py`:
 - Source names and types preserved — no renaming, casting, unit fixes, or dropping
   redundant-looking columns. Wrong values stay wrong in bronze; silver corrects them.
+- **One exception: column names are normalised to lower case.** GDAL does this implicitly
+  for every GML/GPKG source, so all the WFS tables are already lower-case; CSV sources do
+  it explicitly (`load_bronze_gwr.lower_columns()`) so both land the same way. Without it,
+  the UPPER-CASE MADD headers would become quoted identifiers and every downstream query
+  would have to spell `"EGID"`. It is mechanical, not semantic — apply it to the next
+  upper-case source rather than rediscovering the problem.
 - Only additions are provenance columns prefixed `_` (`_source_layer`, `_source_url`,
   `_source_file`, `_ingested_at`).
 - Only removals are GML transport plumbing (`lowerCorner`/`upperCorner`).
@@ -265,6 +375,13 @@ Bronze contract, as applied in `propsearch_data/bronze.py`:
 - GDAL's **GPKG writer** promotes Polygon→MultiPolygon at the `data/bronze/` staging step,
   because a GPKG layer declares one geometry type. `ms:bau` arrives from the WFS as 1,568
   Polygon + 41 MultiPolygon and lands as 1,609 MULTIPOLYGON. Lossless, but not faithful.
+- **The staging format decides whether "unrecorded" is `NULL` or `''`.** The GPKG round-trip
+  converts empty strings to NULL (`bronze.gwr_gebaeude.egrid`: 383 NULL, 0 empty), while the
+  JSON round-trip preserves them (`bronze.gwr_eingang.deinr`: 0 NULL, 124 empty). Both come
+  from the same MADD zip and both mean the same thing. Silver must treat them alike —
+  `NULLIF(col, '')` — and never read one table's emptiness convention into another's.
+  Note `count(DISTINCT col)` skips NULL but counts `''`, so the two spellings give different
+  answers to the same question.
 
 Silver should assert types and geometry explicitly rather than trusting these.
 
@@ -436,6 +553,8 @@ The two layers inspected so far do *not* share a join key, so there is no single
 | `landwertzonen` (`ms:Landwertzonen_*`) | Point, one per parcel | `gs_egris_egrid`, `gemcode` | direct on E-GRID (carries CHF/m², see above) |
 | `oereb_ortsplanung_bauzonen` (`ms:bau`) | Polygon | no E-GRID; `t_id` is `<bfs>_<id>` | spatial (point-in-polygon) |
 | `ng_gefahrenkarte_*` | Polygon | **no Gemeinde key at all** | spatial both ways: bbox to select, point-in-polygon to join |
+| MADD `gwr_gebaeude` | Point, one per **building** | `EGID`; also carries `EGRID`, `GGDENR` | direct on E-GRID — but **one parcel holds many buildings** |
+| MADD `gwr_eingang` | none (`DKODE`/`DKODN` cols) | `(EGID, EDID)`; `EGAID` | on `EGID` to the building, then E-GRID to the parcel |
 
 In `bronze.landwertzonen`, `gs_egris_egrid` is **unique across all 9,879 rows** — the three
 source layers partition the parcel space with zero overlap, so there is exactly one land-value

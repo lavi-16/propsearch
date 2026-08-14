@@ -52,7 +52,7 @@ Secondary goal: validate that the bronze → silver → gold pipeline pattern wo
 
 Still open:
 
-- **Address → parcel resolution** (engineering): **partly resolved.** *Coordinate* → parcel works: the ÖREB `getegrid` route accepts `EN=<easting>,<northing>` (LV95) and `GNSS=<lat>,<lon>` (WGS84, lat first) and returns an E-GRID. Use `GNSS` downstream of a geocoder. What remains genuinely open is *address* → coordinate, which still needs a geocoder — no landed source provides one.
+- **Address → parcel resolution** (engineering): **resolved inside the pilot; open outside it.** `bronze.gwr_eingang` (federal GWR entrance register) carries the geocoded address — street, house number, PLZ — alongside `EGID`, and `bronze.gwr_gebaeude` maps `EGID` to `EGRID`. Measured: 10,286 distinct `(street, house number, PLZ)` keys in the pilot, **none** resolving to conflicting parcels, 95.3% resolving to a parcel present in `silver.parcel`. `DKODE`/`DKODN` give the LV95 coordinate directly on 97.7% of rows, so no geocoder and no ÖREB round-trip is needed here at all. What stays open is the **residual**: new construction not yet in the register, non-official entrances, the ~1% with no house number, and anything outside the five pilot Gemeinden. A geocode cache should be scoped to that residual, keyed on `EGAID` (the federal address ID, 100% populated), rather than built as the primary path.
 - **Licensing** (legal, non-blocking for POC): OGD and geodienste.ch usage terms need review before any of this becomes a PropSearch product feature, not just personal use.
 
 Resolved:

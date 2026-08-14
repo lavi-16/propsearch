@@ -38,6 +38,25 @@ ENDPOINTS = {
     # Confirmed live while scoping the silver layer. Serves ms:raum, the
     # bulk source for the ch.Gewaesserraum OEREB theme.
     "oereb_gewaesserraum": f"{_BASE}/oereb_gewaesserraum",
+    # GWR (Gebäude- und Wohnungsregister). Live -- 124,764 features across
+    # ms:gwr_gebaeude, ms:gwr_gebaeudeeingang, ms:gwr_gebaeudealter_baujahr
+    # and ms:gwr_gebaeudealter_bauperiode, Point/EPSG:2056, carrying egrid
+    # and grundstuecksnummer.
+    #
+    # DELIBERATELY NOT THE BRONZE SOURCE -- bronze.gwr_* comes from the
+    # federal MADD download instead (see ingest/madd.py). Reasons, in
+    # order of severity:
+    #   - `gemeindename` is TRUNCATED TO 10 CHARACTERS, and the layer
+    #     carries no BFS-Nr at all, so property_equals_any() -- the
+    #     established selection pattern -- silently returns a fraction of
+    #     a Gemeinde ('Bottighofen' 18 hits vs 'Bottighofe*' 886). Use
+    #     property_like_any() with a prefix if this is ever selected from.
+    #   - attributes are German labels, not the GWR numeric codes, so the
+    #     published code table cannot be applied.
+    #   - no dwelling level.
+    # Kept here because it is a useful independent oracle, and because it
+    # becomes relevant again at canton-wide scale.
+    "gwr": f"{_BASE}/gwr",
 }
 
 

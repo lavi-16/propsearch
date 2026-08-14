@@ -1,7 +1,7 @@
 .PHONY: setup discover \
-        landwertzonen bauzonen gemeindestats bodenpreise gefahrenkarte oereb \
+        landwertzonen bauzonen gemeindestats bodenpreise gefahrenkarte gwr oereb \
         bronze-landwertzonen bronze-bauzonen bronze-gemeindestats \
-        bronze-bodenpreise bronze-gefahrenkarte bronze-oereb \
+        bronze-bodenpreise bronze-gefahrenkarte bronze-gwr bronze-oereb \
         bronze silver gold test
 
 setup:
@@ -26,6 +26,11 @@ bodenpreise:
 gefahrenkarte:
 	uv run python -m propsearch_data.ingest.discover_gefahrenkarte
 
+# Federal GWR via the BFS MADD bulk download (~35 MB zip, cached in
+# data/bronze/). Not a WFS and not data.tg.ch -- see ingest/madd.py.
+gwr:
+	uv run python -m propsearch_data.ingest.discover_gwr
+
 # depends on bronze.landwertzonen for its parcel sample
 oereb:
 	uv run python -m propsearch_data.ingest.discover_oereb
@@ -46,14 +51,17 @@ bronze-bodenpreise:
 bronze-gefahrenkarte:
 	uv run python -m propsearch_data.ingest.load_bronze_gefahrenkarte
 
+bronze-gwr:
+	uv run python -m propsearch_data.ingest.load_bronze_gwr
+
 bronze-oereb:
 	uv run python -m propsearch_data.ingest.load_bronze_oereb
 
 # Full refresh. OEREB is last because its parcel sample is drawn from
 # bronze.landwertzonen, so that table must already be loaded.
-bronze: landwertzonen bauzonen gemeindestats bodenpreise gefahrenkarte \
+bronze: landwertzonen bauzonen gemeindestats bodenpreise gefahrenkarte gwr \
         bronze-landwertzonen bronze-bauzonen bronze-gemeindestats \
-        bronze-bodenpreise bronze-gefahrenkarte \
+        bronze-bodenpreise bronze-gefahrenkarte bronze-gwr \
         oereb bronze-oereb
 
 # --- bronze -> silver ---
