@@ -225,6 +225,97 @@ Other traps:
 `bronze.gwr_wohnung` (22,249 pilot rows, PK `(EGID, EWID)` — per-dwelling area, rooms,
 floor) is **not landed**; the fetch already reads the file, so adding it is one load script.
 
+## Sonnendach (`bronze.sonnendach`) — roof solar potential, a third grain
+
+`ingest/discover_sonnendach.py` + `ingest/bgdi.py`. BFE layer
+`ch.bfe.solarenergie-eignung-daecher`: one MultiPolygon per **roof plane**, with a modelled
+annual electricity/heat yield, orientation, tilt, area and a **1–5 suitability class**.
+10,071,755 planes nationally; **34,358 in the pilot**. This is the second
+building-level source (`docs/gebaeudedaten-bronze-specs-en.md` §2) and the first via the
+federal BGDI bulk route.
+
+**The spec's proposed access route does not work — three findings overturned it** (confirmed
+live 2026-08-14/17):
+- **`building_id` is NOT the EGID.** The spec assumed it was. The api3 `identify` response
+  carries *both* a swisstopo `building_id` **and** a separate `gwr_egid`, different values and
+  different cardinality (71 vs 46 distinct in one box). The bulk GeoPackage settles it: it
+  carries **`GWR_EGID`** and no `building_id` column at all. Join on `gwr_egid` — it is the
+  same federal id as `bronze.gwr_gebaeude.egid`. A join on `building_id` would silently
+  produce garbage, not fail.
+- **`MapServer/find` is dead here** — the layer is `"searchable": false` in `layersConfig`
+  and returns HTTP 502/504.
+- **`MapServer/identify` caps at 201 rows** regardless of area, and `offset` paging has
+  **unstable ordering** (adjacent pages overlap by 17 and 34 rows), so a sweep **cannot be
+  proven complete**. No WFS is reachable either (`wfs.geo.admin.ch` doesn't resolve here;
+  `ows.geo.tg.ch/geofy_access_proxy/solarenergie` is a pass-through to the federal WMS with
+  WFS disabled). **The STAC bulk GeoPackage is the only complete, reproducible route.**
+
+**Access is bulk, via `ingest/bgdi.py`** (the project's 5th client — federal BGDI asset via
+STAC, scoped so SonBase can reuse it). STAC collection → one item → `assets` dict → asset
+`solarenergie-eignung-daecher_2056.gpkg.zip` (**1.5 GB zip → 4.58 GB member
+`SOLKAT_DACH.gpkg`**). Both the zip and the extracted member are cached in `data/bronze/`,
+same fetch/load split as MADD.
+- **The member is DEFLATE64 (method 9).** The stdlib `zipfile` raises `NotImplementedError`
+  and no `unzip`/`7z`/`bsdtar` is installed, so `bgdi.py` depends on **`zipfile_deflate64`**
+  (a drop-in `ZipFile`). Real dependency, not convenience — added via `uv add`.
+- **Don't use `/vsizip//vsicurl/` for a remote peek** — the member is deflated, so GDAL must
+  inflate the whole stream to reach any page; the remote peek timed out. Extract locally once,
+  then read normally — the GeoPackage carries an **RTree**, so a pilot-window `bbox` read is
+  ~1 s over the 10-million-feature national layer.
+
+**Selection is spatial, like Gefahrenkarte.** Roof planes carry no Gemeinde attribute, so the
+five pilot boundaries come from `hoheitsgrenzen` `ms:Gemeinden_Layer`, their bbox drives the
+windowed read, and rows are narrowed to those intersecting a pilot Gemeinde — **row selection
+only, geometries never clipped.** Per-Gemeinde: Bottighofen 2,464 / Ermatingen 5,230 /
+Kreuzlingen 17,033 / Münsterlingen 4,077 / Tägerwilen 5,565 — none empty (the assertion).
+
+**A THIRD grain, one level below the building.** parcel (E-GRID) → building (EGID) → **roof
+plane**. The unique key is **`DF_UID`** (verified unique on all 34,358); `(gwr_egid, df_nummer)`
+is **not** unique. ~3 planes per building (a roof is split by pitch/orientation — south rated
+apart from north). Joining straight to the 9,879-row parcel spine fans out **twice**: up to 29
+buildings/parcel (GWR) × ~3 planes/building. Aggregate to EGID first (max `klasse`, sum
+`flaeche`/`stromertrag`), or keep it a separate fact.
+
+**Measured join.** 7,414 of 10,392 existing (`gstat='1004'`) pilot buildings (**71.3%**) carry
+≥1 roof plane; through them **5,476 `silver.parcel` rows** are reachable. The ~29% of buildings
+with no roof are **small/minor structures the survey excludes** — normal coverage, not a
+defect. (The spec's cross-layer test parcel `CH107710829377` is exactly such a case: its one
+building has no roof plane within 12 m, so it is not a valid Sonnendach demonstrator. Use a
+roofed building, e.g. egid 663567 on `CH257817784197`: 6 planes, best class 4, 272 m², ~44,900
+kWh/yr.)
+
+**`gwr_egid` arrives as `double precision` with NULLs**, not integer. It is int32 in source,
+but 6.3% of pilot planes have no register link and a nullable integer is rendered by
+GDAL/pandas as float64 with NaN (same class as `lwz` landing double). **Silver casts it to the
+text E-GID form** — `(gwr_egid)::bigint::text` — to join `bronze.gwr_gebaeude.egid`; reading
+the float straight, `2337457.0` will not match the text `'2337457'`. A NULL is an **unlinked**
+roof (surveyed, no register match), not "no roof" — keep it, the `hazard_surveyed`
+measured-absence distinction.
+
+**Other traps:**
+- **Columns land lower-cased.** The SOLKAT GeoPackage stores them UPPER-CASE and GDAL
+  preserves that, so `load_bronze_sonnendach.lower_columns()` applies the same mechanical
+  fix `load_bronze_gwr` does. Nothing else touched.
+- **69 of 34,358 geometries are invalid** (self-intersections), landed as-is per the bronze
+  contract; silver `ST_MakeValid` before any area/overlay arithmetic, as `silver.hazard_zone`
+  does for Gefahrenkarte.
+- **`klasse` is a 1–5 ordinal**, worst→best, decoded by the file's own `EIGNUNG_DACH` lookup
+  (fid = klasse): 1 `gering` (<800 kWh/m²/yr), 2 `mittel` (800–1000), 3 `gut` (1000–1200),
+  4 `sehr gut` (1200–1400), 5 `top` (≥1400). `sb_objektart` is the swisstopo object type
+  (fid = code: 1 Gebaeude Einzelhaus, 2 Hochhaus, …). Both lookups ship as extra GeoPackage
+  layers and are **not landed** (24 tiny legend rows, awkward column names — the
+  `bronze.gwr_wohnung` precedent). The decode above is the record.
+- **Only the full `_2056.gpkg` asset is fetched.** `_generalized` (simplified geometry) and
+  `_monthlydata` (5.42 GB, monthly yield series) are deliberately skipped.
+  `ch.bfe.solarenergie-eignung-**fassaden**` (facades) is a sibling layer, out of scope
+  (roofs only).
+- Vintage: per-plane `datum_erstellung`/`datum_aenderung`; collection-level STAC `updated`
+  (2025-01-18). Row count asserted as a **range** (baseline 34,358 ±10%), not an equality —
+  the national layer is periodically re-flown.
+
+**No silver/gold modelling yet** — like GWR, which it sits below. Promoting it waits on GWR's
+own promotion (the EGID fan-out, `GSTAT` filter, and null-means-unrecorded questions).
+
 ## ÖREB webservice — `ingest/oereb.py`
 
 Base `https://map.geo.tg.ch/services/oereb/`, version `extract-2.0`, 32 themes. This is the
@@ -272,6 +363,9 @@ config on top of them, not a new copy of the fetch loop.
 - `ingest/madd.py` — `download()` (streamed, cached), `read_csv()` (tab-delimited,
   utf-8-sig, all-string). Bulk zip: no server-side filter, so the whole canton comes down
   and the pilot slice is cut locally.
+- `ingest/bgdi.py` — `assets()` / `collection_updated()` (federal STAC), `download()`
+  (streamed, cached, takes a URL), `extract_member()` (DEFLATE64 via `zipfile_deflate64`).
+  Bulk national GeoPackage: no server-side filter, cut locally from a windowed `bbox` read.
 - `bronze.py` — `tag_provenance()`, `combine()`, `load()` (spatial), `load_table()`
   (non-spatial, with `dtype` passthrough for JSONB), `summarise()` / `summarise_table()`
 
@@ -352,6 +446,7 @@ Landed so far — all five spec layers now have a bronze source:
 | `bronze.gwr_gebaeude` | 11,217 | BFS MADD `tg.zip` | bulk zip, spatial (Point) |
 | `bronze.gwr_eingang` | 11,489 | BFS MADD `tg.zip` | bulk zip, tabular |
 | `bronze.gwr_kodes` | 405 | BFS MADD `tg.zip` | bulk zip, tabular |
+| `bronze.sonnendach` | 34,358 | BFE BGDI `SOLKAT_DACH.gpkg` | bulk zip, spatial (MultiPolygon) |
 | `bronze.oereb_extract` | 25 | ÖREB webservice | **per-parcel query** |
 | `bronze.oereb_restriction` | 80 | (unnested from above) | — |
 
@@ -555,6 +650,7 @@ The two layers inspected so far do *not* share a join key, so there is no single
 | `ng_gefahrenkarte_*` | Polygon | **no Gemeinde key at all** | spatial both ways: bbox to select, point-in-polygon to join |
 | MADD `gwr_gebaeude` | Point, one per **building** | `EGID`; also carries `EGRID`, `GGDENR` | direct on E-GRID — but **one parcel holds many buildings** |
 | MADD `gwr_eingang` | none (`DKODE`/`DKODN` cols) | `(EGID, EDID)`; `EGAID` | on `EGID` to the building, then E-GRID to the parcel |
+| BGDI `sonnendach` | MultiPolygon, one per **roof plane** | `DF_UID` (grain); `GWR_EGID` (link) | on `GWR_EGID` to the building — but **one building has many roof planes** |
 
 In `bronze.landwertzonen`, `gs_egris_egrid` is **unique across all 9,879 rows** — the three
 source layers partition the parcel space with zero overlap, so there is exactly one land-value

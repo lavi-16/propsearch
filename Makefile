@@ -1,7 +1,7 @@
 .PHONY: setup discover \
-        landwertzonen bauzonen gemeindestats bodenpreise gefahrenkarte gwr oereb \
+        landwertzonen bauzonen gemeindestats bodenpreise gefahrenkarte gwr sonnendach oereb \
         bronze-landwertzonen bronze-bauzonen bronze-gemeindestats \
-        bronze-bodenpreise bronze-gefahrenkarte bronze-gwr bronze-oereb \
+        bronze-bodenpreise bronze-gefahrenkarte bronze-gwr bronze-sonnendach bronze-oereb \
         bronze silver gold test
 
 setup:
@@ -31,6 +31,13 @@ gefahrenkarte:
 gwr:
 	uv run python -m propsearch_data.ingest.discover_gwr
 
+# Roof solar potential (Sonnendach) via the federal BGDI bulk GeoPackage
+# (~1.5 GB zip -> 4.58 GB member, cached in data/bronze/). Not the
+# api3.geo.admin.ch REST route, which cannot produce a complete slice --
+# see ingest/bgdi.py.
+sonnendach:
+	uv run python -m propsearch_data.ingest.discover_sonnendach
+
 # depends on bronze.landwertzonen for its parcel sample
 oereb:
 	uv run python -m propsearch_data.ingest.discover_oereb
@@ -54,14 +61,17 @@ bronze-gefahrenkarte:
 bronze-gwr:
 	uv run python -m propsearch_data.ingest.load_bronze_gwr
 
+bronze-sonnendach:
+	uv run python -m propsearch_data.ingest.load_bronze_sonnendach
+
 bronze-oereb:
 	uv run python -m propsearch_data.ingest.load_bronze_oereb
 
 # Full refresh. OEREB is last because its parcel sample is drawn from
 # bronze.landwertzonen, so that table must already be loaded.
-bronze: landwertzonen bauzonen gemeindestats bodenpreise gefahrenkarte gwr \
+bronze: landwertzonen bauzonen gemeindestats bodenpreise gefahrenkarte gwr sonnendach \
         bronze-landwertzonen bronze-bauzonen bronze-gemeindestats \
-        bronze-bodenpreise bronze-gefahrenkarte bronze-gwr \
+        bronze-bodenpreise bronze-gefahrenkarte bronze-gwr bronze-sonnendach \
         oereb bronze-oereb
 
 # --- bronze -> silver ---

@@ -12,6 +12,7 @@ dependencies = [
     "python-dotenv>=1.0",
     "pydantic>=2.9",
     "geoalchemy2>=0.20.0",
+    "zipfile-deflate64>=0.2.0",
 ]
 
 [dependency-groups]
