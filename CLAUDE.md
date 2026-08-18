@@ -225,6 +225,23 @@ Other traps:
 `bronze.gwr_wohnung` (22,249 pilot rows, PK `(EGID, EWID)` — per-dwelling area, rooms,
 floor) is **not landed**; the fetch already reads the file, so adding it is one load script.
 
+**Silver/gold now built — GWR is the new building grain.** `silver.building` (11,217, PK
+`egid`) is the spine, and it settled the three gating questions as declared constraints:
+- **GSTAT** — all states kept; `is_existing boolean` CHECKed against `gstat = '1004'`, so a
+  demolished (`1007`) building can never be counted as current. `gold.building` (10,392)
+  filters to existing via a CHECK, the `gold.parcel_hazard` synoptic-exclusion precedent.
+- **null-means-unrecorded** — empty MADD strings land as NULL; numeric columns stay nullable
+  and are never coalesced to 0 (a CHECK forbids a 0).
+- **EGRID is a link, not a key** — nullable plain column, **not a FK** (383 have none, 490 sit
+  on a parcel outside the pilot); the 92.2% (10,344) join to `silver.parcel` is asserted.
+- Codes decoded in silver by joining `bronze.gwr_kodes` on **both** `(cecodid, cmerkm)` — the
+  `gn_kantname` "source ships its own lookup" precedent, no hand-built crosswalk.
+
+`gold.building` joins the building to its solar (`silver.building_solar`) and noise
+(`silver.building_noise`) facts, and links to `gold.parcel` on `egrid` (many buildings per
+parcel). `gold.parcel` gained pre-aggregated rollups (`n_buildings`, `best_solar_class`,
+`has_solar_potential`, `max_noise_day`/`_night`) that leave its 9,879-row grain intact.
+
 ## Sonnendach (`bronze.sonnendach`) — roof solar potential, a third grain
 
 `ingest/discover_sonnendach.py` + `ingest/bgdi.py`. BFE layer
@@ -313,8 +330,12 @@ measured-absence distinction.
   (2025-01-18). Row count asserted as a **range** (baseline 34,358 ±10%), not an equality —
   the national layer is periodically re-flown.
 
-**No silver/gold modelling yet** — like GWR, which it sits below. Promoting it waits on GWR's
-own promotion (the EGID fan-out, `GSTAT` filter, and null-means-unrecorded questions).
+**Silver/gold now built.** Promoted alongside GWR: `silver.roof_plane` (34,358, per-plane
+detail, `ST_MakeValid`) and `silver.building_solar` (7,701, aggregated to EGID —
+`best_class`/`roof_area_m2`/`solar_yield_kwh`); surfaced on `gold.building.solar_class` and
+rolled up to `gold.parcel.best_solar_class` / `has_solar_potential`. The
+`(gwr_egid)::bigint::text` cast is applied in `silver.roof_plane` and asserted to actually
+match `silver.building.egid` (7,701 buildings). See the GWR promotion note below.
 
 ## SonBase / Lärm (`bronze.laerm_strasse` / `bronze.laerm_bahn`) — noise exposure
 
@@ -374,9 +395,14 @@ as-is per the bronze contract, emptiness recorded. Same class as the Bauzonen em
 - Row counts asserted as a **tolerance band**, not equality (the cadastre/raster are periodically
   recomputed); what is exact is that no pilot Gemeinde comes back empty.
 
-**No silver/gold modelling yet** — noise is another building-level fact and is promoted with
-GWR and Sonnendach, once the EGID fan-out / `GSTAT` / null-means-unrecorded questions are
-settled. The rail facade-point → building spatial link belongs in that silver step.
+**Silver/gold now built.** `silver.rail_noise` (937, per facade-point detail) and
+`silver.building_noise` (11,217, one row per building — road `lr_tag`/`lr_nacht` by attribute,
+rail `lr_day`/`lr_night` by the **nearest facade point within 50 m**, all 937 points link at
+that threshold). The NULL-vs-0.0 modelled-area distinction is a `road_noise_modelled` boolean
+tied to its payload by CHECK, and rail's `has_rail_noise` likewise. Surfaced on
+`gold.building` (`noise_road_day/night`, `noise_rail_day/night`) and rolled up to
+`gold.parcel.max_noise_day` / `max_noise_night` (`GREATEST` across road+rail, ignoring NULL).
+The rail facade-point → building spatial link lives in `silver.building_noise` as planned.
 
 ## ÖREB webservice — `ingest/oereb.py`
 
@@ -472,27 +498,38 @@ Unknown slugs return HTTP 401, so probing candidates is cheap and safe.
 Original decision (2026-08-13): bronze first, gold not to be designed until several
 sources had landed and could be checked against each other.
 
-**All three layers are now built.** Bronze is complete for all five spec layers,
-silver is built and tested, and **gold is built and tested** — see the two
-sections below. Gold selects from `silver.*` and never from `bronze.*` (a test
-enforces this by reading the DDL text, since Postgres records no catalog
-dependency for an `INSERT ... SELECT`). `gold.parcel` is keyed on `egrid` alone
-(single 2024 vintage) and `gold.parcel_restriction` remains **deferred** pending
-the bulk WFS ingestion.
+**All three layers are now built — for all eight sources, including the three
+building-level ones.** Bronze is complete for the five spec layers plus GWR,
+Sonnendach and SonBase noise; silver and **gold** are built and tested over all
+of them — see the two sections below. Gold selects from `silver.*` and never
+from `bronze.*` (a test enforces this by reading the DDL text, since Postgres
+records no catalog dependency for an `INSERT ... SELECT`). `gold.parcel` is
+keyed on `egrid` alone (single 2024 vintage), `gold.building` on `egid`, and
+`gold.parcel_restriction` remains **deferred** pending the bulk WFS ingestion.
+
+The building-level promotion (2026-08-18) was split silver-first then gold, for
+the same reason hazard was: gold could not be designed until silver settled how
+a building relates to a parcel (the `EGID` fan-out, `GSTAT`, null-means-
+unrecorded — all now declared constraints). See the GWR / Sonnendach / SonBase
+sections above for each source's silver/gold shape.
 
 The remaining open work is the bulk WFS restrictions pull
 (`docs/next-bronze-restrictions.md`), which is what unblocks
 `gold.parcel_restriction`.
 
-**Bronze has since been extended past the five spec layers.**
-`docs/gebaeudedaten-bronze-specs-en.md` adds three building-level sources, and
-**all three are now landed** — GWR (`bronze.gwr_gebaeude` / `_eingang` /
+**Bronze has since been extended past the five spec layers, and the extension
+now runs all the way to gold.** `docs/gebaeudedaten-bronze-specs-en.md` adds
+three building-level sources — GWR (`bronze.gwr_gebaeude` / `_eingang` /
 `_kodes`), Sonnendach (`bronze.sonnendach`) and SonBase noise
 (`bronze.laerm_strasse` / `bronze.laerm_bahn`); see their sections above.
-None of the three has **silver or gold modelling yet**, and three things must be
-settled before they get any: the `EGID` fan-out (2,435 pilot parcels carry
-more than one building), the `GSTAT` filter (700 demolished buildings look
-identical to live ones), and null-means-unrecorded on a raw register.
+**All three are now modelled in silver and gold.** The three gating questions
+were settled as declared constraints in silver: the `EGID` fan-out (a grain
+below the parcel, contained by per-grain tables — `silver.building`,
+`silver.roof_plane`/`building_solar`, `silver.rail_noise`/`building_noise`), the
+`GSTAT` filter (`is_existing` CHECKed against `gstat`, `gold.building` keeps only
+existing), and null-means-unrecorded (nulls preserved, a 0 forbidden by CHECK).
+Gold adds `gold.building` (10,392, EGID grain) and building rollups on
+`gold.parcel`. See the two "built" sections below.
 
 Landed so far — all five spec layers now have a bronze source:
 
@@ -570,6 +607,11 @@ pass; a failing CHECK means the source changed and that's the signal.
 | `silver.gemeinde_*` (4) | 115/30/95/2,090 | typed casts, **full year ranges kept** |
 | `silver.oereb_extract_sample` | 25 | 0.3% — `_sample` is load-bearing |
 | `silver.parcel_restriction_sample` | 80 | — |
+| `silver.building` | 11,217 | PK `egid`; `is_existing` CHECKed vs `gstat`; `egrid` a nullable link, not a FK |
+| `silver.roof_plane` | 34,358 | PK `df_uid`; `ST_MakeValid` + GIST; `(gwr_egid)::bigint::text` cast |
+| `silver.building_solar` | 7,701 | PK `egid` → `building` — roof planes aggregated to the building |
+| `silver.rail_noise` | 937 | PK `xtf_id` — rail facade points (EGID unusable, link is spatial) |
+| `silver.building_noise` | 11,217 | PK `egid`; road by attribute, rail by nearest point ≤50 m; NULL≠0 |
 
 Things silver settled that contradict earlier notes here:
 
@@ -597,9 +639,16 @@ Things silver settled that contradict earlier notes here:
   overlays (Gestaltungsplanpflicht, Umgebungsschutzzone, Gefahrenzone…). Comparing
   *every* `ch.Nutzungsplanung` row against the Bauzonen zone reads as disagreement;
   the correct check is that the base zone appears **among** them — 25/25.
+- **The building layer is a new grain BELOW the parcel**, so nothing under it joins the
+  9,879-row parcel spine 1:1. It is held in per-grain tables — building (`egid`), roof
+  plane (`df_uid`), rail facade point (`xtf_id`) — with aggregates (`building_solar`,
+  `building_noise`) at the building grain that gold consumes. The `(gwr_egid)::bigint::text`
+  cast is asserted to actually match (7,701 buildings); read as a float, `2337457.0` would
+  never match the text `'2337457'`. Rail links **spatially** (nearest building ≤50 m) because
+  its `EGID` field is 0% populated — the one genuinely new join pattern in silver.
 
 Tests are read-only assertions against whatever `make silver` last built (`tests/`,
-66 of them). No fixture data: the pilot slice is the thing worth testing.
+90 of them). No fixture data: the pilot slice is the thing worth testing.
 
 ## Gold is built — `sql/schema/gold/`, `make gold`
 
@@ -610,8 +659,9 @@ Its contribution is a **grain guarantee**.
 
 | Table | Rows | Grain | What it pins down |
 |---|---|---|---|
-| `gold.parcel` | 9,879 | `egrid` | zoning + price + hazard in one row; `in_bauzone` / `hazard_surveyed` keep "measured absence" distinct from NULL |
+| `gold.parcel` | 9,879 | `egrid` | zoning + price + hazard + building rollups in one row; `in_bauzone` / `hazard_surveyed` / `has_solar_potential` keep "measured absence" distinct from NULL |
 | `gold.parcel_hazard` | 17,784 | `(egrid, source_layer)` | per-process detail; **synoptic layer excluded by CHECK** |
+| `gold.building` | 10,392 | `egid` | building attrs + solar + noise; **existing-only by CHECK**; links to `gold.parcel` on `egrid` |
 | `gold.gemeinde_year` | 115 | `(bfs_nr, jahr)` | 2004–2026, ragged on purpose; age table aggregated to 2 shares |
 | `gold.gemeinde_bodenpreis` | 520 | `(bfs_nr, jahr, zone_category_code)` | `CHECK (jahr > year(window_end))` makes "trailing window" structural |
 
@@ -649,9 +699,22 @@ Things the build settled:
   dependency between a table and whatever an `INSERT ... SELECT` read to fill
   it, so a catalog-based check passes either way. The test reads the DDL text
   with comments stripped.
+- **`gold.building` is a second grain (EGID), and it is filtered to existing.**
+  `silver.building` keeps all GSTAT states; `gold.building` selects only
+  `is_existing` and a CHECK forbids any other state leaking — the
+  `gold.parcel_hazard` synoptic-exclusion precedent. It links to `gold.parcel`
+  on `egrid` (nullable, not a FK: 13 existing buildings carry no in-pilot
+  parcel), one parcel to many buildings.
+- **The parcel building rollups aggregate BEFORE the join**, so the spine stays
+  9,879. `n_buildings` / `best_solar_class` / `has_solar_potential` /
+  `max_noise_day`/`_night` come from a subquery grouped on `egrid`; a per-parcel
+  count off `gold.building` would otherwise fan out (up to 18 existing buildings
+  per parcel). Rollups count existing buildings only, matching `gold.building`.
+  Cross-checks landed on the independently-measured figures: 7,414 existing
+  buildings carry a roof plane, reaching 5,476 parcels.
 
-Gold tests are `tests/test_gold_*.py`, 45 of them, same read-only style —
-111 tests total across silver and gold.
+Gold tests are `tests/test_gold_*.py`, 58 of them, same read-only style —
+148 tests total across silver and gold.
 
 ## The grounding rule
 

@@ -57,6 +57,7 @@ def build() -> None:
 def summarise() -> None:
     """Row counts, plus the distributions where a grain slip would show."""
     bronze.summarise("parcel", schema=SCHEMA, geom_col="geom")
+    bronze.summarise("building", schema=SCHEMA, geom_col="geom")
     bronze.summarise_table("parcel_hazard", schema=SCHEMA, group_by="source_layer")
     bronze.summarise_table("gemeinde_year", schema=SCHEMA)
     bronze.summarise_table("gemeinde_bodenpreis", schema=SCHEMA, group_by="zone_category_label")

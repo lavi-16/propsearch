@@ -144,6 +144,44 @@ def test_restgefahr_carries_no_rank(scalar):
     ) == 0
 
 
+# --- building rollups -----------------------------------------------------
+
+
+def test_building_rollups_do_not_change_the_grain(scalar):
+    """The rollups aggregate buildings to one row per parcel before joining,
+    so the spine stays 9,879. n_buildings = 0 is a fact, not a NULL."""
+    assert scalar("SELECT count(*) FROM gold.parcel") == 9879
+    assert scalar("SELECT count(*) FROM gold.parcel WHERE n_buildings > 0") == 6578
+    assert scalar("SELECT count(*) FROM gold.parcel WHERE n_buildings = 0") == 3301
+    # The rollup counts exactly the existing buildings that sit on a pilot parcel.
+    assert scalar("SELECT sum(n_buildings) FROM gold.parcel") == 9921
+
+
+def test_parcel_solar_rollup(scalar):
+    """5,476 parcels are reachable through a building with a roof plane.
+    has_solar_potential is tied to best_solar_class by CHECK."""
+    assert scalar(
+        "SELECT count(*) FROM gold.parcel WHERE has_solar_potential"
+    ) == 5476
+    assert scalar(
+        "SELECT count(*) FROM gold.parcel "
+        "WHERE has_solar_potential <> (best_solar_class IS NOT NULL)"
+    ) == 0
+    # A solar class can only ride on a parcel that actually has a building.
+    assert scalar(
+        "SELECT count(*) FROM gold.parcel WHERE best_solar_class IS NOT NULL "
+        "AND n_buildings = 0"
+    ) == 0
+
+
+def test_parcel_solar_class_is_the_building_maximum(scalar):
+    """The parcel's best class is the max over its existing buildings."""
+    assert scalar(
+        "SELECT count(*) FROM gold.parcel p WHERE p.best_solar_class IS DISTINCT FROM "
+        "(SELECT max(b.solar_class) FROM gold.building b WHERE b.egrid = p.egrid)"
+    ) == 0
+
+
 # --- what must not be here ------------------------------------------------
 
 

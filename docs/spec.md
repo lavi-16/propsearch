@@ -72,4 +72,5 @@ Resolved:
 2. ~~Design the gold-layer schema (parcel record + Gemeinde context table)~~ — done and built: `gold.parcel` + `gold.gemeinde_year`, joined on `bfs_nr`
 3. ~~Build bronze ingestion for the 5 pilot sources~~ — done, plus silver and gold
 4. ~~Run the first end-to-end lookup on one real test parcel~~ — done: `CH107710829377` (Kreuzlingen 3228) returns all five layers from `gold.parcel`, with its 1,180 CHF/m² EFH price cross-checked against the independent Bodenpreise band (817–1,514, market-based)
-5. **Next:** bulk WFS restrictions ingestion (`docs/next-bronze-restrictions.md`) — the one spec layer still served only by a 0.3% ÖREB sample, and what unblocks `gold.parcel_restriction`
+5. ~~Extend bronze past the five spec layers with three building-level sources (GWR, Sonnendach, SonBase noise), all the way to silver and gold~~ — done: `silver.building` / `roof_plane` / `building_solar` / `rail_noise` / `building_noise`, and `gold.building` (10,392) plus building rollups on `gold.parcel`. 148 tests total.
+6. **Next:** bulk WFS restrictions ingestion (`docs/next-bronze-restrictions.md`) — the one spec layer still served only by a 0.3% ÖREB sample, and what unblocks `gold.parcel_restriction`

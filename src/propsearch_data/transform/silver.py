@@ -72,6 +72,15 @@ def summarise() -> None:
         "parcel_hazard_synoptic", schema=SCHEMA, group_by="hazard_surveyed"
     )
 
+    # Building layer (a grain below the parcel) and the two facts beneath it.
+    bronze.summarise("building", schema=SCHEMA, geom_col="geom", group_by="is_existing")
+    bronze.summarise("roof_plane", schema=SCHEMA, geom_col="geom", group_by="klasse")
+    bronze.summarise_table("building_solar", schema=SCHEMA)
+    bronze.summarise("rail_noise", schema=SCHEMA, geom_col="geom")
+    bronze.summarise_table(
+        "building_noise", schema=SCHEMA, group_by="road_noise_modelled"
+    )
+
     engine = get_engine()
     with engine.connect() as conn:
         # The two numbers most worth eyeballing after a rebuild, because

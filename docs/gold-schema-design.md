@@ -1,8 +1,17 @@
 # Gold schema — design proposal
 
-Status: **built.** `sql/schema/gold/`, `make gold`, 45 tests. Four tables:
+Status: **built.** `sql/schema/gold/`, `make gold`. Original four tables:
 `gold.parcel` (9,879), `gold.parcel_hazard` (17,784), `gold.gemeinde_year` (115),
 `gold.gemeinde_bodenpreis` (520).
+
+> **Update (2026-08-18): the building layer landed in silver and gold.** A fifth
+> gold table `gold.building` (10,392, grain `egid`) was added when GWR / Sonnendach
+> / SonBase noise were promoted — a grain BELOW the parcel, so it is its own fact
+> rather than columns on `gold.parcel`, which instead gained pre-aggregated rollups
+> (`n_buildings`, `best_solar_class`, `has_solar_potential`, `max_noise_day`/`_night`).
+> This document covers the original parcel/Gemeinde design only; the building layer's
+> shape is documented in `CLAUDE.md` (the GWR / Sonnendach / SonBase sections and the
+> two "built" sections). Test count is now 148 total (silver + gold).
 
 > **Update (2026-08-13): silver is built, and the three open decisions below
 > are resolved.** See the "Open decisions — resolved" section at the end.

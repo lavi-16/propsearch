@@ -89,6 +89,16 @@ CREATE TABLE gold.parcel (
     hazard_process        text,
     hazard_matrixfeld     text,
 
+    -- Building rollups. Aggregated from silver.building (EXISTING buildings
+    -- only) and its two facts, grouped to the parcel so the whole block is
+    -- one row -- the per-building detail is gold.building. n_buildings = 0 is
+    -- a fact (no building on the parcel), not missing data.
+    n_buildings           integer  NOT NULL DEFAULT 0,
+    best_solar_class      smallint,
+    has_solar_potential   boolean  NOT NULL,
+    max_noise_day         numeric,
+    max_noise_night       numeric,
+
     geom                  geometry(Point, 2056) NOT NULL,
 
     CONSTRAINT parcel_efh_positive CHECK (price_efh_chf_m2 IS NULL OR price_efh_chf_m2 > 0),
@@ -111,7 +121,16 @@ CREATE TABLE gold.parcel (
 
     CONSTRAINT parcel_grade_known
         CHECK (hazard_grade_overall IS NULL
-               OR hazard_grade_overall IN ('keine', 'gering', 'mittel', 'erheblich', 'Restgefahr'))
+               OR hazard_grade_overall IN ('keine', 'gering', 'mittel', 'erheblich', 'Restgefahr')),
+
+    -- Solar potential exists exactly when a class was aggregated.
+    CONSTRAINT parcel_solar_iff_class
+        CHECK (has_solar_potential = (best_solar_class IS NOT NULL)),
+    CONSTRAINT parcel_solar_class_range
+        CHECK (best_solar_class IS NULL OR best_solar_class BETWEEN 1 AND 5),
+    -- A solar class can only come from a building.
+    CONSTRAINT parcel_solar_needs_buildings
+        CHECK (best_solar_class IS NULL OR n_buildings > 0)
 );
 
 INSERT INTO gold.parcel (
@@ -121,6 +140,8 @@ INSERT INTO gold.parcel (
     verfahren_haengig,
     hazard_surveyed, hazard_grade_overall, hazard_rank, hazard_process,
     hazard_matrixfeld,
+    n_buildings, best_solar_class, has_solar_potential,
+    max_noise_day, max_noise_night,
     geom
 )
 SELECT
@@ -149,6 +170,12 @@ SELECT
     h.prozess_massgebend,
     h.matrixfeld,
 
+    coalesce(b.n_buildings, 0),
+    b.best_solar_class,
+    b.best_solar_class IS NOT NULL,
+    b.max_noise_day,
+    b.max_noise_night,
+
     p.geom
 FROM silver.parcel p
 JOIN      silver.gemeinde                g ON g.bfs_nr = p.bfs_nr
@@ -157,7 +184,24 @@ LEFT JOIN silver.parcel_zone             z ON z.egrid  = p.egrid
 -- so this LEFT JOIN never actually misses. It is a LEFT JOIN so that a
 -- future gap fails the NOT NULL on hazard_surveyed instead of silently
 -- dropping a parcel from the spine.
-LEFT JOIN silver.parcel_hazard_synoptic  h ON h.egrid  = p.egrid;
+LEFT JOIN silver.parcel_hazard_synoptic  h ON h.egrid  = p.egrid
+-- Building rollups, pre-aggregated to one row per parcel so this LEFT JOIN
+-- cannot fan out the 9,879-row spine. EXISTING buildings only, matching
+-- gold.building. GREATEST ignores NULL, so a building with only road (or
+-- only rail) noise still contributes.
+LEFT JOIN (
+    SELECT
+        bl.egrid,
+        count(*)                                             AS n_buildings,
+        max(sol.best_class)                                  AS best_solar_class,
+        max(GREATEST(noi.road_lr_day,   noi.rail_lr_day))    AS max_noise_day,
+        max(GREATEST(noi.road_lr_night, noi.rail_lr_night))  AS max_noise_night
+    FROM silver.building bl
+    LEFT JOIN silver.building_solar sol ON sol.egid = bl.egid
+    LEFT JOIN silver.building_noise noi ON noi.egid = bl.egid
+    WHERE bl.is_existing AND bl.egrid IS NOT NULL
+    GROUP BY bl.egrid
+) b ON b.egrid = p.egrid;
 
 CREATE INDEX gold_parcel_bfs_nr_idx     ON gold.parcel (bfs_nr);
 CREATE INDEX gold_parcel_zone_class_idx ON gold.parcel (zone_class);
