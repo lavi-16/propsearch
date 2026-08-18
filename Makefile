@@ -1,8 +1,8 @@
 .PHONY: setup discover \
-        landwertzonen bauzonen gemeindestats bodenpreise gefahrenkarte gwr sonnendach laerm oereb \
+        landwertzonen bauzonen gemeindestats bodenpreise gefahrenkarte gwr sonnendach laerm pronovo oereb \
         bronze-landwertzonen bronze-bauzonen bronze-gemeindestats \
-        bronze-bodenpreise bronze-gefahrenkarte bronze-gwr bronze-sonnendach bronze-laerm bronze-oereb \
-        bronze silver gold test
+        bronze-bodenpreise bronze-gefahrenkarte bronze-gwr bronze-sonnendach bronze-laerm bronze-pronovo bronze-oereb \
+        bronze silver gold neoteq test
 
 setup:
 	uv sync
@@ -44,6 +44,13 @@ sonnendach:
 laerm:
 	uv run python -m propsearch_data.ingest.discover_laerm
 
+# BFE/Pronovo electricity-production-plant registry via the federal BGDI/STAC
+# route -- an 88 MB uncompressed GeoPackage read through a windowed /vsicurl/
+# bbox (no download). Unblocks the neoteq "already has PV" exclusion. See
+# ingest/discover_pronovo.py.
+pronovo:
+	uv run python -m propsearch_data.ingest.discover_pronovo
+
 # depends on bronze.landwertzonen for its parcel sample
 oereb:
 	uv run python -m propsearch_data.ingest.discover_oereb
@@ -75,15 +82,18 @@ bronze-sonnendach:
 bronze-laerm:
 	uv run python -m propsearch_data.ingest.load_bronze_laerm
 
+bronze-pronovo:
+	uv run python -m propsearch_data.ingest.load_bronze_pronovo
+
 bronze-oereb:
 	uv run python -m propsearch_data.ingest.load_bronze_oereb
 
 # Full refresh. bronze-laerm follows bronze-gwr because road noise is sampled
 # at bronze.gwr_gebaeude building points. OEREB is last because its parcel
 # sample is drawn from bronze.landwertzonen, so that table must already be loaded.
-bronze: landwertzonen bauzonen gemeindestats bodenpreise gefahrenkarte gwr sonnendach laerm \
+bronze: landwertzonen bauzonen gemeindestats bodenpreise gefahrenkarte gwr sonnendach laerm pronovo \
         bronze-landwertzonen bronze-bauzonen bronze-gemeindestats \
-        bronze-bodenpreise bronze-gefahrenkarte bronze-gwr bronze-sonnendach bronze-laerm \
+        bronze-bodenpreise bronze-gefahrenkarte bronze-gwr bronze-sonnendach bronze-laerm bronze-pronovo \
         oereb bronze-oereb
 
 # --- bronze -> silver ---
@@ -96,6 +106,14 @@ silver:
 # Full rebuild from silver. Never reads bronze, so `silver` must be current.
 gold:
 	uv run python -m propsearch_data.transform.gold
+
+# --- neoteq strand (heat-pump/PV lead list) ---
+# Persist + refresh neoteq.candidate from gold + silver.building_pv, then
+# enrich addresses from bronze.gwr_eingang. IDEMPOTENT and NON-DESTRUCTIVE:
+# the hand-edited `status`/`address` columns survive a re-run, so unlike
+# silver/gold this table is never dropped. Run after `gold`.
+neoteq:
+	uv run python -m propsearch_data.transform.neoteq
 
 # Read-only assertions against the built silver and gold tables.
 # Run after `silver` and `gold`.

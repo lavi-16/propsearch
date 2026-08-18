@@ -80,6 +80,8 @@ def summarise() -> None:
     bronze.summarise_table(
         "building_noise", schema=SCHEMA, group_by="road_noise_modelled"
     )
+    bronze.summarise("pv_plant", schema=SCHEMA, geom_col="geom")
+    bronze.summarise_table("building_pv", schema=SCHEMA)
 
     engine = get_engine()
     with engine.connect() as conn:
