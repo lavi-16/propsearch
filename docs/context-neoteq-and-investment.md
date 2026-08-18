@@ -51,13 +51,16 @@ good roof, no PV yet — so an installer/sales process can reach out.
   workaround — direct mail, installer partnerships, etc. Not an engineering task, don't
   build anything for it.
 
-### Confirmed data gap: BFE/Pronovo PV registry
+### Confirmed data gap: BFE/Pronovo PV registry — NOW INGESTED (2026-08-18)
 
-`ch.bfe.elektrizitätsproduktionsanlagen` — existing PV installations. Without this, a
+`ch.bfe.elektrizitaetsproduktionsanlagen` — existing PV installations. Without this, a
 "good roof, no PV" candidate list can't exclude buildings that already have PV, which
-would be a bad look on first contact. Same geo.admin.ch WFS/WMS ingestion pattern as
-other layers already built (Sonnendach, hazard, etc.) — no new pattern needed, just a
-new source. This one is confirmed needed; not waiting on exploration results.
+would be a bad look on first contact. Ingested via the federal BGDI/STAC bulk GeoPackage
+(the Sonnendach/noise route), not the WFS/WMS pattern this note assumed — see CLAUDE.md
+"BFE/Pronovo". Note the ASCII collection id above (`elektrizitaetsproduktionsanlagen`);
+the umlaut spelling does not resolve. Landed as `bronze.stromproduktion` →
+`silver.pv_plant` / `silver.building_pv`, and the neoteq candidate list now excludes
+buildings with PV (2,756 → 2,439).
 
 ### Candidate identification — critical filtering nuance
 

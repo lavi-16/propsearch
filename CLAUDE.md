@@ -18,9 +18,11 @@ no UI, no scheduling/orchestration, no MCP server. Don't build them.
 ```bash
 make setup       # uv sync
 make discover    # dump WFS GetCapabilities to docs/wfs-capabilities/
-make bronze      # full refresh: pull both sources from WFS and load them
+make bronze      # full refresh: pull every source and load it into bronze.*
 make silver      # rebuild schema `silver` from bronze (pure DB-to-DB)
-make test        # pytest -- read-only assertions against the built silver
+make gold        # rebuild schema `gold` from silver (never reads bronze)
+make neoteq      # refresh neoteq.candidate (idempotent; hand-edited status survives)
+make test        # pytest -- read-only assertions against the built silver + gold
 ```
 
 Individual steps: `make landwertzonen` / `make bauzonen` / `make bodenpreise`, then
@@ -404,6 +406,86 @@ tied to its payload by CHECK, and rail's `has_rail_noise` likewise. Surfaced on
 `gold.parcel.max_noise_day` / `max_noise_night` (`GREATEST` across road+rail, ignoring NULL).
 The rail facade-point → building spatial link lives in `silver.building_noise` as planned.
 
+## BFE/Pronovo (`bronze.stromproduktion`) — the PV-installation registry
+
+`ingest/discover_pronovo.py` + `load_bronze_pronovo.py`. Added for the **neoteq strand**
+(heat-pump/PV lead generation, see `docs/context-neoteq-and-investment.md`): the one
+confirmed-missing source needed to drop candidate buildings that **already have PV**. The
+federal BFE electricity-production-plant registry (Swiss guarantee-of-origin / Pronovo
+system): one Point per registered plant, 1,676 in the pilot.
+
+**The collection id is ASCII, not the context file's umlaut spelling.** The neoteq context
+names it `ch.bfe.elektrizitätsproduktionsanlagen`; the live STAC id is
+`ch.bfe.elektrizitaetsproduktionsanlagen` (ae). Same class of spec-vs-reality gap as
+Sonnendach's `building_id` — confirmed live before committing.
+
+**Access is the federal BGDI/STAC bulk GeoPackage** (`ingest/bgdi.py`, its third consumer
+after Sonnendach and the noise layers), **not** the WFS/WMS the context assumed. The asset
+`elektrizitaetsproduktionsanlagen_2056.gpkg` is **88 MB, uncompressed, RTree-backed**, so —
+like the rail `.gpkg` and unlike the DEFLATE64 Sonnendach zip — it is read directly through a
+windowed `/vsicurl/` bbox (no download, no extract). Selection is spatial, like
+Sonnendach/Gefahrenkarte: pilot polygons from `hoheitsgrenzen ms:Gemeinden_Layer`, bbox drives
+the read, rows narrowed to those intersecting a pilot Gemeinde — geometry never clipped.
+
+**The category is CODED, decoded by the file's own catalogue layers** (`MainCategoryCatalogue`
+/ `SubCategoryCatalogue` / `PlantCategoryCatalogue`, not landed — the `EIGNUNG_DACH` /
+`gwr_wohnung` precedent). Confirmed live: **PV is `SubCategory = 'subcat_2'` (Photovoltaik)**.
+`MainCategory 'maincat_2'` is the coarser "Übrige erneuerbare Energien"; `PlantCategory` is the
+mount type (`plantcat_8` Angebaut, `plantcat_9` Integriert, `plantcat_10` Freistehend). 1,675
+of 1,676 pilot plants are PV; the one non-PV is `subcat_4` Biomass. **Bronze lands all
+subcategories raw** per the contract — silver filters to PV. Columns land lower-cased
+(`load_bronze_pronovo.lower_columns()`, the GWR/Sonnendach precedent).
+
+**No EGID → the building link is SPATIAL** (the rail-noise precedent), and it lives in silver.
+Grounded 2026-08-18, plant-point → nearest existing-building distance is **bimodal**: p50 5.6 m
+/ p75 8.7 m (geocoded to ≈the building), then jumps to p90 668 m / p95 1002 m — ~15% are
+geocoded only to a PLZ/municipality centroid. **286 pilot PV plants sit >50 m from any building
+and cannot be attached** to one; that residual is a documented caveat on the exclusion, not
+something to force onto a building. Row count asserted as a **tolerance band** (the registry is
+refreshed continuously; STAC `updated` 2026-08-06), exact only on no-Gemeinde-empty.
+
+**Silver/gold now built.** `silver.pv_plant` (1,675, per-plant PV detail, PK `xtf_id`, the
+`silver.rail_noise` analogue) and `silver.building_pv` (1,644 existing buildings — nearest
+existing building within **50 m**, the `silver.building_noise` join; `has_pv` CHECKed true, FK
+to `silver.building`). Absence from `building_pv` = "no attached PV" — the neoteq exclusion
+key. A **floor, not a census** (the 286 unattachable plants). Practical match distances are
+tight (avg 6.1 m, max 36.8 m), so the 25-vs-50 m radius choice moves only ~20 buildings. Not
+rolled into `gold` — the exclusion is consumed by `neoteq.candidate` (see below), keeping gold
+the general-purpose record.
+
+## neoteq strand — `neoteq.candidate` (`transform/neoteq.py`)
+
+The first **strand schema**: per `docs/context-neoteq-and-investment.md`, gold stays the shared
+due-diligence record and strand-specific state (lead status, outreach) gets its own namespace
+rather than widening gold. `neoteq.candidate` is the heat-pump/PV lead list —
+**existing + fossil heating (`heating IN ('Gas','Heizöl')`) + roof solar class 4–5 +
+NOT EXISTS in `silver.building_pv`** — **2,439 buildings** (2,756 fossil+solar minus 317 with
+PV), 100% address-resolved.
+
+**It is NOT rebuilt like silver/gold.** Lavi edits `status` by hand as outreach happens
+(`not_contacted` / `contacted` / `responded` / `declined`, plain text, no enum), so the table
+must **persist independent of recompute**. `make neoteq` is idempotent: the upsert refreshes
+only the derived columns and **leaves `status`/`address`/`plz`/`ort` untouched** on an existing
+row (verified). A building that stops qualifying (got PV, criteria change) **retires**
+(`is_candidate → false`) rather than being deleted — its outreach history is kept. The FK to
+`gold.building` is **re-asserted every run** because `make gold` `DROP…CASCADE`s the referent
+and would silently drop it.
+
+**Address enrichment is an attribute join to `bronze.gwr_eingang` on `egid`, not a geocoder** —
+100% coverage inside the pilot. Multi-entrance buildings (52) are disambiguated to the
+**official address** (`doffadr='1'`, then official street, then lowest `edid`). Caveat, same
+rigor as the PV join: **344 rows have a postal `ort` ≠ political `gemeinde_name`** — all
+legitimate (Scherzingen/Landschlacht → Münsterlingen, Triboltingen → Ermatingen, 7 Tägerwilen
+→ `8280 Kreuzlingen`, the Tägermoos class). The mailing address is correct; just never key a
+Gemeinde join on the postal `ort`.
+
+**The heating-age gap is unresolved and must not be silently proxied.** GWR has no reliable
+heating-*replacement* date: `gwaerdath1` ("Datum der Information Wärmeerzeuger") is a
+data-currency date dominated by a `2001-11-29` bulk-import stamp (58% of dated candidates), and
+`gbauj` is construction year. So the candidate list answers "fossil + good roof, today", not
+"fossil heating due for replacement". Surface it as a caveat next to any count — do **not**
+filter on building age as a substitute.
+
 ## ÖREB webservice — `ingest/oereb.py`
 
 Base `https://map.geo.tg.ch/services/oereb/`, version `extract-2.0`, 32 themes. This is the
@@ -531,6 +613,16 @@ existing), and null-means-unrecorded (nulls preserved, a 0 forbidden by CHECK).
 Gold adds `gold.building` (10,392, EGID grain) and building rollups on
 `gold.parcel`. See the two "built" sections below.
 
+**A fourth building-level source and the first strand schema (2026-08-18).**
+The neoteq strand (heat-pump/PV lead generation,
+`docs/context-neoteq-and-investment.md`) added the BFE/Pronovo PV registry
+(`bronze.stromproduktion` → `silver.pv_plant` / `silver.building_pv`) to exclude
+buildings that already have PV, and persisted the lead list as `neoteq.candidate`
+— the first **strand schema**: gold stays the shared record, strand-specific state
+(lead status, outreach) gets its own namespace. Unlike silver/gold, `neoteq.candidate`
+is hand-editable and never rebuilt. See the "BFE/Pronovo" and "neoteq strand" sections
+above.
+
 Landed so far — all five spec layers now have a bronze source:
 
 | Table | Rows | Source | Access pattern |
@@ -549,6 +641,7 @@ Landed so far — all five spec layers now have a bronze source:
 | `bronze.sonnendach` | 34,358 | BFE BGDI `SOLKAT_DACH.gpkg` | bulk zip, spatial (MultiPolygon) |
 | `bronze.laerm_strasse` | 11,217 | BAFU BGDI `strassenlaerm_{tag,nacht}` COG | windowed raster, **sampled at building points** |
 | `bronze.laerm_bahn` | 937 | BAV BGDI `eisenbahn_immissionen.gpkg` | windowed vector, spatial (Point) |
+| `bronze.stromproduktion` | 1,676 | BFE BGDI `elektrizitaetsproduktionsanlagen_2056.gpkg` | windowed vector, spatial (Point) |
 | `bronze.oereb_extract` | 25 | ÖREB webservice | **per-parcel query** |
 | `bronze.oereb_restriction` | 80 | (unnested from above) | — |
 
@@ -612,6 +705,8 @@ pass; a failing CHECK means the source changed and that's the signal.
 | `silver.building_solar` | 7,701 | PK `egid` → `building` — roof planes aggregated to the building |
 | `silver.rail_noise` | 937 | PK `xtf_id` — rail facade points (EGID unusable, link is spatial) |
 | `silver.building_noise` | 11,217 | PK `egid`; road by attribute, rail by nearest point ≤50 m; NULL≠0 |
+| `silver.pv_plant` | 1,675 | PK `xtf_id` — PV plants only (`subcat_2`); no EGID, link is spatial |
+| `silver.building_pv` | 1,644 | PK `egid` → `building` — nearest existing building ≤50 m; a floor, not a census |
 
 Things silver settled that contradict earlier notes here:
 
@@ -648,7 +743,8 @@ Things silver settled that contradict earlier notes here:
   its `EGID` field is 0% populated — the one genuinely new join pattern in silver.
 
 Tests are read-only assertions against whatever `make silver` last built (`tests/`,
-90 of them). No fixture data: the pilot slice is the thing worth testing.
+97 of them, incl. `test_silver_pv.py`). No fixture data: the pilot slice is the thing
+worth testing.
 
 ## Gold is built — `sql/schema/gold/`, `make gold`
 
@@ -713,8 +809,9 @@ Things the build settled:
   Cross-checks landed on the independently-measured figures: 7,414 existing
   buildings carry a roof plane, reaching 5,476 parcels.
 
-Gold tests are `tests/test_gold_*.py`, 58 of them, same read-only style —
-148 tests total across silver and gold.
+Gold tests are `tests/test_gold_*.py`, 58 of them, same read-only style. The neoteq
+strand adds `tests/test_neoteq_candidate.py` (6). **161 tests total** across silver,
+gold and neoteq.
 
 ## The grounding rule
 
@@ -781,6 +878,7 @@ The two layers inspected so far do *not* share a join key, so there is no single
 | BGDI `sonnendach` | MultiPolygon, one per **roof plane** | `DF_UID` (grain); `GWR_EGID` (link) | on `GWR_EGID` to the building — but **one building has many roof planes** |
 | BGDI `laerm_strasse` | Point, one per **building** (sampled) | `egid` | direct on `egid` to the building (sampled *at* the GWR point), then E-GRID to the parcel |
 | BGDI `laerm_bahn` | Point, one per **facade point** | `xtf_id` (grain); no usable EGID | **spatial** — `EGID` field is empty in the pilot, so nearest-building in silver |
+| BGDI `stromproduktion` | Point, one per **PV plant** | `xtf_id` (grain); no EGID | **spatial** — no building id at all, so nearest existing building ≤50 m in silver |
 
 In `bronze.landwertzonen`, `gs_egris_egrid` is **unique across all 9,879 rows** — the three
 source layers partition the parcel space with zero overlap, so there is exactly one land-value
