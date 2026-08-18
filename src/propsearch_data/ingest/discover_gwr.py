@@ -56,6 +56,7 @@ Gemeinde may come back empty.
 from pathlib import Path
 
 import geopandas as gpd
+import pandas as pd
 
 from propsearch_data.ingest import madd
 from propsearch_data.ingest.discover_gemeindestats import PILOT_BFS
@@ -97,14 +98,28 @@ def pilot_bfs() -> set[str]:
 
 
 def to_points(df) -> gpd.GeoDataFrame:
-    """Build the Point geometry from the GKODE/GKODN LV95 coordinate pair."""
-    easting = df["GKODE"].astype(float)
-    northing = df["GKODN"].astype(float)
-    return gpd.GeoDataFrame(
+    """Build the Point geometry from the GKODE/GKODN LV95 coordinate pair.
+
+    Coordinates are coerced with `to_numeric(errors="coerce")`, not
+    `astype(float)`: the CSV is read with keep_default_na=False, so an
+    unrecorded coordinate is an empty string, and GWR is a RAW REGISTER
+    where a projected building (GSTAT 1001/1008) may have no coordinate
+    yet. `astype(float)` would raise on '' and abort the whole run; a
+    blank instead becomes a NULL point, which bronze lands as NULL geom --
+    the register row is kept, only its location is unknown.
+    """
+    easting = pd.to_numeric(df["GKODE"], errors="coerce")
+    northing = pd.to_numeric(df["GKODN"], errors="coerce")
+    gdf = gpd.GeoDataFrame(
         df,
         geometry=gpd.points_from_xy(easting, northing),
         crs="EPSG:2056",
     )
+    missing = easting.isna() | northing.isna()
+    if missing.any():
+        gdf.loc[missing, gdf.geometry.name] = None
+        print(f"  {int(missing.sum())} building(s) with no GKODE/GKODN -> NULL geometry")
+    return gdf
 
 
 def check_extent(gdf: gpd.GeoDataFrame) -> None:
