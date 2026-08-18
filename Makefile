@@ -1,7 +1,7 @@
 .PHONY: setup discover \
-        landwertzonen bauzonen gemeindestats bodenpreise gefahrenkarte gwr sonnendach oereb \
+        landwertzonen bauzonen gemeindestats bodenpreise gefahrenkarte gwr sonnendach laerm oereb \
         bronze-landwertzonen bronze-bauzonen bronze-gemeindestats \
-        bronze-bodenpreise bronze-gefahrenkarte bronze-gwr bronze-sonnendach bronze-oereb \
+        bronze-bodenpreise bronze-gefahrenkarte bronze-gwr bronze-sonnendach bronze-laerm bronze-oereb \
         bronze silver gold test
 
 setup:
@@ -38,6 +38,12 @@ gwr:
 sonnendach:
 	uv run python -m propsearch_data.ingest.discover_sonnendach
 
+# SonBase / BAFU noise via the federal BGDI/STAC route. Road (day+night) is a
+# Cloud-Optimized GeoTIFF read through a windowed /vsicurl/ clip; rail is the
+# BAV vector cadastre. See ingest/discover_laerm.py.
+laerm:
+	uv run python -m propsearch_data.ingest.discover_laerm
+
 # depends on bronze.landwertzonen for its parcel sample
 oereb:
 	uv run python -m propsearch_data.ingest.discover_oereb
@@ -64,14 +70,20 @@ bronze-gwr:
 bronze-sonnendach:
 	uv run python -m propsearch_data.ingest.load_bronze_sonnendach
 
+# Road noise is sampled at building points, so bronze.gwr_gebaeude must be
+# loaded first (see the bronze target ordering below).
+bronze-laerm:
+	uv run python -m propsearch_data.ingest.load_bronze_laerm
+
 bronze-oereb:
 	uv run python -m propsearch_data.ingest.load_bronze_oereb
 
-# Full refresh. OEREB is last because its parcel sample is drawn from
-# bronze.landwertzonen, so that table must already be loaded.
-bronze: landwertzonen bauzonen gemeindestats bodenpreise gefahrenkarte gwr sonnendach \
+# Full refresh. bronze-laerm follows bronze-gwr because road noise is sampled
+# at bronze.gwr_gebaeude building points. OEREB is last because its parcel
+# sample is drawn from bronze.landwertzonen, so that table must already be loaded.
+bronze: landwertzonen bauzonen gemeindestats bodenpreise gefahrenkarte gwr sonnendach laerm \
         bronze-landwertzonen bronze-bauzonen bronze-gemeindestats \
-        bronze-bodenpreise bronze-gefahrenkarte bronze-gwr bronze-sonnendach \
+        bronze-bodenpreise bronze-gefahrenkarte bronze-gwr bronze-sonnendach bronze-laerm \
         oereb bronze-oereb
 
 # --- bronze -> silver ---

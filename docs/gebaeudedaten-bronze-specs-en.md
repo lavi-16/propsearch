@@ -85,6 +85,17 @@ yield class, linkable via the building ID.
 
 ## 3. SonBase (BAFU) — Noise Exposure
 
+> **STATUS (2026-08-18): LANDED.** Road noise (day+night) and rail noise are both in bronze —
+> `bronze.laerm_strasse` (11,217 buildings) and `bronze.laerm_bahn` (937 rail facade points).
+> The access-route investigation this section asked for is done and overturned the WMTS-raster
+> assumption: road noise is a **Cloud-Optimized GeoTIFF** (pixel = Lr dB(A) directly), read via
+> a windowed `/vsicurl/` clip and sampled at building points; rail is the **BAV vector cadastre**
+> `ch.bav.laermbelastung-eisenbahn_immissionen` (a GeoPackage, not a raster). Both go through the
+> federal BGDI/STAC route (`ingest/bgdi.py`), **not** `api3.geo.admin.ch`. The `ch.bafu.laerm-*`
+> layer's `building_id`-style link is moot for rail — its `EGID` field is 0% populated in the
+> pilot, so rail links to buildings spatially in silver. See the "SonBase / Lärm" section in
+> `CLAUDE.md` and `ingest/discover_laerm.py`.
+
 **Goal:** Noise exposure (road, optionally rail) as a risk/livability signal, analogous to the hazard layer.
 
 **Source:** BAFU (Federal Office for the Environment), layers `ch.bafu.laerm-strassenlaerm_tag` /

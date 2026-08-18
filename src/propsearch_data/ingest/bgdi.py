@@ -15,6 +15,10 @@ It is scoped to "federal BGDI bulk asset via STAC", not to any one layer,
 because the building-data spec (docs/gebaeudedaten-bronze-specs-en.md) has
 a second federal source behind this same API -- SonBase / BAFU noise -- so
 the resolution and download logic is worth sharing rather than copying.
+That second consumer has since landed: ingest/discover_laerm.py reuses
+`assets()` / `collection_updated()` here for both the road-noise COG and the
+BAV rail-noise GeoPackage (the road COG is read through a windowed
+/vsicurl/ clip rather than `download()`, since a COG needs no full pull).
 
 WHY BULK, NOT THE api3.geo.admin.ch REST ROUTE. The spec proposed reaching
 Sonnendach through `MapServer/identify` / `MapServer/find`. Confirmed live

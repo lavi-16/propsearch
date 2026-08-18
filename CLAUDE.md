@@ -316,6 +316,68 @@ measured-absence distinction.
 **No silver/gold modelling yet** — like GWR, which it sits below. Promoting it waits on GWR's
 own promotion (the EGID fan-out, `GSTAT` filter, and null-means-unrecorded questions).
 
+## SonBase / Lärm (`bronze.laerm_strasse` / `bronze.laerm_bahn`) — noise exposure
+
+`ingest/discover_laerm.py` + `load_bronze_laerm.py`. The THIRD and last building-data source
+(`docs/gebaeudedaten-bronze-specs-en.md` §3). **The name is a red herring:** the federal
+legend confirms "SonBase" *is* **sonBASE**, BAFU's area-wide noise-exposure model. Noise is a
+risk/livability signal analogous to the hazard layer. Access is the same federal **BGDI/STAC
+route** as Sonnendach (`ingest/bgdi.py`, its intended second consumer), **not** the
+`api3.geo.admin.ch` `MapServer/identify` route the spec named — `layersConfig` shows that is
+the PNG *display* layer (`type: wmts`), not a data route.
+
+**Road noise is a Cloud-Optimized GeoTIFF whose pixel value is dB directly.** Collections
+`ch.bafu.laerm-strassenlaerm_tag` / `_nacht`; each STAC item carries a `*_2056.tif` COG
+(**553 MB**) plus a `*.zip` that is `application/x.pdf+zip` (docs, not vector). The COG header,
+parsed directly: **1 band, Float64, NODATA −9999, no colormap, LZW, 512² tiles, 10 m grid,
+EPSG:2056** — so the value is the Beurteilungspegel Lr in dB(A) *directly*, **not** a class
+index needing a lookup (unlike Sonnendach's `KLASSE`). Because it is a COG with range support,
+a **windowed `/vsicurl/` read** of the pilot bbox pulls only the covering tiles (~16 MB) — the
+raster analogue of Sonnendach's windowed GPKG read — written to `data/bronze/` as a small clip
+and sampled at building points in the load step. **A 0.0 pixel is a computed "negligible"
+reading and survives; −9999 is "outside the modelled area" → NULL.** Two different facts, the
+`hazard_surveyed` measured-absence distinction — don't read a NULL as "quiet".
+
+**Rail noise is richer than the spec knew — a vector GeoPackage, not a raster.**
+`ch.bav.laermbelastung-eisenbahn_immissionen` ships an **uncompressed 60 MB `.gpkg`** (BAV, not
+BAFU), read over `/vsicurl/` with a `bbox` window — no raster reader, no unzip. Layer
+`immission_railway_pointofdetermination` is Point-per-facade with `Lr_day` / `Lr_night` in dB,
+`floor`, `ES_Katalog_de`, `OperationStatus_Katalog_de`. Newer vintage (2023-04-18) than the
+BAFU rail raster. The other layers (`_legal`, `noisebarrier` — 0 in pilot, `dispersion_calculation`)
+are not landed.
+
+**RAIL EGID TRAP:** the point layer *has* an `EGID` field but it is **0% populated in the
+pilot** (every value NaN). So rail does **not** join to buildings by attribute — the building
+link is **spatial** (facade point → nearest building/parcel) and belongs in silver. Landed
+as-is per the bronze contract, emptiness recorded. Same class as the Bauzonen empty-`gml_id`.
+
+**Two tables, two deliberate landing philosophies:**
+
+| Table | Grain | Rows | How it lands |
+|---|---|---|---|
+| `bronze.laerm_strasse` | building (`egid`) | 11,217 | **DERIVED** — two road COGs sampled at each pilot building point (`lr_tag`, `lr_nacht`). A raster can't become a table without sampling; this is the spec's endorsed `laerm_punkte` deviation, flagged not hidden. |
+| `bronze.laerm_bahn` | facade point (`xtf_id`) | 937 | **RAW** — BAV rail points as delivered, like Sonnendach roof planes. |
+
+- **Selection is spatial** (like Sonnendach/Gefahrenkarte): pilot polygons from
+  `hoheitsgrenzen ms:Gemeinden_Layer`, padded bbox drives the reads, rail narrowed to
+  intersecting rows — geometry never clipped. Per-Gemeinde rail: Bottighofen 79 / Ermatingen
+  130 / Kreuzlingen 500 / Münsterlingen 163 / Tägerwilen 65, none empty (the assertion).
+- **`GSTAT` is not filtered** — all 11,217 buildings sampled, incl. 700 demolished; filtering
+  is silver's job, per the GWR contract.
+- **Measured join:** `lr_tag` lands on 11,029 buildings (188 outside the modelled area → NULL),
+  dB 1.2–71.5; building maxima sit below the raster's 84.8 because buildings are set back from
+  road centrelines. 6,599 `silver.parcel` rows are reachable through a road-noise-bearing
+  building. Night ≤ day holds on every building; day ≥ night on every rail point (verified).
+- **New dependency `rasterio`** (`uv add`) — pyogrio's GDAL is vector-only and can't read the
+  COG. The "genuinely new pattern" the spec anticipated, analogous to `zipfile_deflate64` for
+  Sonnendach. Rail needs nothing new.
+- Row counts asserted as a **tolerance band**, not equality (the cadastre/raster are periodically
+  recomputed); what is exact is that no pilot Gemeinde comes back empty.
+
+**No silver/gold modelling yet** — noise is another building-level fact and is promoted with
+GWR and Sonnendach, once the EGID fan-out / `GSTAT` / null-means-unrecorded questions are
+settled. The rail facade-point → building spatial link belongs in that silver step.
+
 ## ÖREB webservice — `ingest/oereb.py`
 
 Base `https://map.geo.tg.ch/services/oereb/`, version `extract-2.0`, 32 themes. This is the
@@ -423,11 +485,12 @@ The remaining open work is the bulk WFS restrictions pull
 `gold.parcel_restriction`.
 
 **Bronze has since been extended past the five spec layers.**
-`docs/gebaeudedaten-bronze-specs-en.md` adds three building-level sources;
-the first, **GWR, is landed** (`bronze.gwr_gebaeude` / `_eingang` / `_kodes`
-— see the GWR section above). Sonnendach and SonBase are not started.
-GWR has **no silver or gold modelling yet**, and three things must be
-settled before it gets any: the `EGID` fan-out (2,435 pilot parcels carry
+`docs/gebaeudedaten-bronze-specs-en.md` adds three building-level sources, and
+**all three are now landed** — GWR (`bronze.gwr_gebaeude` / `_eingang` /
+`_kodes`), Sonnendach (`bronze.sonnendach`) and SonBase noise
+(`bronze.laerm_strasse` / `bronze.laerm_bahn`); see their sections above.
+None of the three has **silver or gold modelling yet**, and three things must be
+settled before they get any: the `EGID` fan-out (2,435 pilot parcels carry
 more than one building), the `GSTAT` filter (700 demolished buildings look
 identical to live ones), and null-means-unrecorded on a raw register.
 
@@ -447,6 +510,8 @@ Landed so far — all five spec layers now have a bronze source:
 | `bronze.gwr_eingang` | 11,489 | BFS MADD `tg.zip` | bulk zip, tabular |
 | `bronze.gwr_kodes` | 405 | BFS MADD `tg.zip` | bulk zip, tabular |
 | `bronze.sonnendach` | 34,358 | BFE BGDI `SOLKAT_DACH.gpkg` | bulk zip, spatial (MultiPolygon) |
+| `bronze.laerm_strasse` | 11,217 | BAFU BGDI `strassenlaerm_{tag,nacht}` COG | windowed raster, **sampled at building points** |
+| `bronze.laerm_bahn` | 937 | BAV BGDI `eisenbahn_immissionen.gpkg` | windowed vector, spatial (Point) |
 | `bronze.oereb_extract` | 25 | ÖREB webservice | **per-parcel query** |
 | `bronze.oereb_restriction` | 80 | (unnested from above) | — |
 
@@ -651,6 +716,8 @@ The two layers inspected so far do *not* share a join key, so there is no single
 | MADD `gwr_gebaeude` | Point, one per **building** | `EGID`; also carries `EGRID`, `GGDENR` | direct on E-GRID — but **one parcel holds many buildings** |
 | MADD `gwr_eingang` | none (`DKODE`/`DKODN` cols) | `(EGID, EDID)`; `EGAID` | on `EGID` to the building, then E-GRID to the parcel |
 | BGDI `sonnendach` | MultiPolygon, one per **roof plane** | `DF_UID` (grain); `GWR_EGID` (link) | on `GWR_EGID` to the building — but **one building has many roof planes** |
+| BGDI `laerm_strasse` | Point, one per **building** (sampled) | `egid` | direct on `egid` to the building (sampled *at* the GWR point), then E-GRID to the parcel |
+| BGDI `laerm_bahn` | Point, one per **facade point** | `xtf_id` (grain); no usable EGID | **spatial** — `EGID` field is empty in the pilot, so nearest-building in silver |
 
 In `bronze.landwertzonen`, `gs_egris_egrid` is **unique across all 9,879 rows** — the three
 source layers partition the parcel space with zero overlap, so there is exactly one land-value
