@@ -1,7 +1,7 @@
 .PHONY: setup discover \
-        landwertzonen bauzonen gemeindestats bodenpreise gefahrenkarte gwr sonnendach laerm pronovo oereb \
+        landwertzonen bauzonen gemeindestats bodenpreise gefahrenkarte gwr sonnendach laerm pronovo divenergie oereb \
         bronze-landwertzonen bronze-bauzonen bronze-gemeindestats \
-        bronze-bodenpreise bronze-gefahrenkarte bronze-gwr bronze-sonnendach bronze-laerm bronze-pronovo bronze-oereb \
+        bronze-bodenpreise bronze-gefahrenkarte bronze-gwr bronze-sonnendach bronze-laerm bronze-pronovo bronze-divenergie bronze-oereb \
         bronze silver gold neoteq test
 
 setup:
@@ -51,6 +51,12 @@ laerm:
 pronovo:
 	uv run python -m propsearch_data.ingest.discover_pronovo
 
+# Cantonal energy-subsidy programme (Gebaeudeprogramm) per Gemeinde x year,
+# from data.tg.ch div-energie-2 -- the same tabular ODS path as the sk-stat
+# sources. Gemeinde-level context for the neoteq strand, not per-building.
+divenergie:
+	uv run python -m propsearch_data.ingest.discover_divenergie
+
 # depends on bronze.landwertzonen for its parcel sample
 oereb:
 	uv run python -m propsearch_data.ingest.discover_oereb
@@ -85,15 +91,18 @@ bronze-laerm:
 bronze-pronovo:
 	uv run python -m propsearch_data.ingest.load_bronze_pronovo
 
+bronze-divenergie:
+	uv run python -m propsearch_data.ingest.load_bronze_divenergie
+
 bronze-oereb:
 	uv run python -m propsearch_data.ingest.load_bronze_oereb
 
 # Full refresh. bronze-laerm follows bronze-gwr because road noise is sampled
 # at bronze.gwr_gebaeude building points. OEREB is last because its parcel
 # sample is drawn from bronze.landwertzonen, so that table must already be loaded.
-bronze: landwertzonen bauzonen gemeindestats bodenpreise gefahrenkarte gwr sonnendach laerm pronovo \
+bronze: landwertzonen bauzonen gemeindestats bodenpreise gefahrenkarte gwr sonnendach laerm pronovo divenergie \
         bronze-landwertzonen bronze-bauzonen bronze-gemeindestats \
-        bronze-bodenpreise bronze-gefahrenkarte bronze-gwr bronze-sonnendach bronze-laerm bronze-pronovo \
+        bronze-bodenpreise bronze-gefahrenkarte bronze-gwr bronze-sonnendach bronze-laerm bronze-pronovo bronze-divenergie \
         oereb bronze-oereb
 
 # --- bronze -> silver ---

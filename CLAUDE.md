@@ -486,6 +486,47 @@ data-currency date dominated by a `2001-11-29` bulk-import stamp (58% of dated c
 "fossil heating due for replacement". Surface it as a caveat next to any count — do **not**
 filter on building age as a substitute.
 
+**Candidate detail extended (2026-08-19), selection criteria unchanged (still 2,439).** Five
+descriptive columns were added to `neoteq.candidate` — no new exclusion logic. All are plumbed
+through the layers (silver → gold → neoteq), not computed inline:
+- `hot_water_source` / `heat_generator_type` — decoded in `silver.building` from `genw1` /
+  `gwaerzh1`. Unlike `heating` (raw `codtxtld`), these are **bucketed** because the strand asks
+  a yes/no question, and the buckets are pinned by CHECK: `hot_water_source ∈ {fossil, electric,
+  solar-thermal, other}`, `heat_generator_type ∈ {boiler_condensing, boiler_non_condensing,
+  boiler_generic, stove, heat_pump, other}`. The pitch signal: **1,898 of 2,439 (77.8%) make
+  hot water off the fossil boiler** (genw1 fossil), so a heat pump replacing the boiler also
+  takes their hot water — the strongest combined HP+PV case. A NULL is unrecorded genw1, never
+  "no hot water".
+- `roof_orientation_deg` / `roof_tilt_deg` — rolled to the building in `silver.building_solar`
+  from the **plane that achieves `best_class`** (max klasse, ties broken by largest area then
+  `df_uid`), **not an average** (averaging azimuths is meaningless). A test asserts every
+  candidate's surfaced orientation/tilt trace to a real plane whose `klasse = solar_class`.
+  100% populated on candidates (all are class 4–5).
+- `dwelling_count` — carried straight from `gold.building.dwellings` (`ganzwhg`); 93 unrecorded.
+  Pilot split: **1,309 EFH (1 dwelling) / 1,037 MFH (2+)**, Kreuzlingen the only MFH-majority.
+
+The candidate table still **persists** (never dropped); the new columns are added with
+`ALTER TABLE … ADD COLUMN IF NOT EXISTS` inside the DDL block so an existing table gains them,
+and refreshed in the `ON CONFLICT … DO UPDATE SET` alongside the other derived columns —
+`status`/`address` still untouched.
+
+## Energieförderprogramm (`bronze.gemeinde_energiefoerderung`) — Gemeinde-level subsidy context
+
+`ingest/discover_divenergie.py` + `load_bronze_divenergie.py`. data.tg.ch `div-energie-2`
+(Kanton TG DIV), the cantonal energy-subsidy programme carrying the federal "Gebäudeprogramm"
+measures. Same **tabular ODS path** as the sk-stat sources (`opendata.export`, `bronze.load_table`).
+One row per **Gemeinde × year**, a **count of subsidised projects per measure** (`waermepumpe`,
+`gebaeudehuelle`, `geak_sanierung`, solar, …). 85 pilot rows, all 5 Gemeinden × 2008–2024.
+
+**Gemeinde-level context, deliberately NOT joined to `neoteq.candidate`** — it carries no
+building/parcel id and is an adoption/market signal (how many heat pumps were subsidised in a
+Gemeinde in a year), not a per-building fact. A test asserts the candidate table carries no
+column referencing it. Silver casts the text keys (`bfs_nr_gemeinde::integer`,
+`left(jahr,4)::integer`) and wraps every count `nullif(col::text,'')::integer` — 22 columns are
+`int` but `machbarkeitsstudie` is typed text, so the uniform wrap covers both. Full year range
+kept, like `50_gemeinde_series.sql`. 2024 heat-pump subsidies: Kreuzlingen 43, Ermatingen 15,
+Tägerwilen 13, Münsterlingen 12, Bottighofen 7.
+
 ## ÖREB webservice — `ingest/oereb.py`
 
 Base `https://map.geo.tg.ch/services/oereb/`, version `extract-2.0`, 32 themes. This is the
@@ -642,6 +683,7 @@ Landed so far — all five spec layers now have a bronze source:
 | `bronze.laerm_strasse` | 11,217 | BAFU BGDI `strassenlaerm_{tag,nacht}` COG | windowed raster, **sampled at building points** |
 | `bronze.laerm_bahn` | 937 | BAV BGDI `eisenbahn_immissionen.gpkg` | windowed vector, spatial (Point) |
 | `bronze.stromproduktion` | 1,676 | BFE BGDI `elektrizitaetsproduktionsanlagen_2056.gpkg` | windowed vector, spatial (Point) |
+| `bronze.gemeinde_energiefoerderung` | 85 | data.tg.ch `div-energie-2` | bulk, tabular |
 | `bronze.oereb_extract` | 25 | ÖREB webservice | **per-parcel query** |
 | `bronze.oereb_restriction` | 80 | (unnested from above) | — |
 

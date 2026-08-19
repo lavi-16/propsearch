@@ -49,7 +49,12 @@ CREATE TABLE IF NOT EXISTS neoteq.candidate (
     egid          text PRIMARY KEY REFERENCES gold.building (egid),
     gemeinde_name text,
     heating       text,
+    hot_water_source     text,
+    heat_generator_type  text,
     solar_class   int,
+    roof_orientation_deg numeric,
+    roof_tilt_deg        numeric,
+    dwelling_count       smallint,
     has_pv        boolean,
     is_candidate  boolean,      -- true under current criteria (see module doc)
     status        text NOT NULL DEFAULT 'not_contacted',
@@ -58,6 +63,15 @@ CREATE TABLE IF NOT EXISTS neoteq.candidate (
     ort           text,
     computed_at   timestamptz NOT NULL DEFAULT now()
 );
+
+-- neoteq.candidate PERSISTS across runs (never dropped), so new derived columns
+-- must be added to the already-existing table, not merely declared in the
+-- CREATE above. Idempotent: a freshly created table already carries them.
+ALTER TABLE neoteq.candidate ADD COLUMN IF NOT EXISTS hot_water_source     text;
+ALTER TABLE neoteq.candidate ADD COLUMN IF NOT EXISTS heat_generator_type  text;
+ALTER TABLE neoteq.candidate ADD COLUMN IF NOT EXISTS roof_orientation_deg numeric;
+ALTER TABLE neoteq.candidate ADD COLUMN IF NOT EXISTS roof_tilt_deg        numeric;
+ALTER TABLE neoteq.candidate ADD COLUMN IF NOT EXISTS dwelling_count       smallint;
 """
 
 # Re-assert the FK each run so a `make gold` CASCADE drop is self-healed.
@@ -72,22 +86,30 @@ ALTER TABLE neoteq.candidate
 # absent from the UPDATE set -- those are hand-edited and must survive a re-run.
 UPSERT = f"""
 INSERT INTO neoteq.candidate (
-    egid, gemeinde_name, heating, solar_class, has_pv, is_candidate, computed_at
+    egid, gemeinde_name, heating, hot_water_source, heat_generator_type,
+    solar_class, roof_orientation_deg, roof_tilt_deg, dwelling_count,
+    has_pv, is_candidate, computed_at
 )
 SELECT
-    b.egid, b.gemeinde_name, b.heating, b.solar_class,
+    b.egid, b.gemeinde_name, b.heating, b.hot_water_source, b.heat_generator_type,
+    b.solar_class, b.roof_orientation_deg, b.roof_tilt_deg, b.dwellings,
     EXISTS (SELECT 1 FROM silver.building_pv pv WHERE pv.egid = b.egid),  -- false for candidates
     true,
     now()
 FROM gold.building b
 WHERE {CANDIDATE_PREDICATE}
 ON CONFLICT (egid) DO UPDATE SET
-    gemeinde_name = excluded.gemeinde_name,
-    heating       = excluded.heating,
-    solar_class   = excluded.solar_class,
-    has_pv        = excluded.has_pv,
-    is_candidate  = true,
-    computed_at   = excluded.computed_at;
+    gemeinde_name        = excluded.gemeinde_name,
+    heating              = excluded.heating,
+    hot_water_source     = excluded.hot_water_source,
+    heat_generator_type  = excluded.heat_generator_type,
+    solar_class          = excluded.solar_class,
+    roof_orientation_deg = excluded.roof_orientation_deg,
+    roof_tilt_deg        = excluded.roof_tilt_deg,
+    dwelling_count       = excluded.dwelling_count,
+    has_pv               = excluded.has_pv,
+    is_candidate         = true,
+    computed_at          = excluded.computed_at;
 """
 
 # Any row previously flagged a candidate but no longer qualifying: flip

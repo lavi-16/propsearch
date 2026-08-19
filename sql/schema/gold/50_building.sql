@@ -36,12 +36,16 @@ CREATE TABLE gold.building (
     floors             smallint,
     dwellings          smallint,
     heating            text,
+    hot_water_source   text,          -- genw1 bucketed
+    heat_generator_type text,         -- gwaerzh1 bucketed
 
     -- Solar (aggregated from roof planes in silver).
     solar_class        smallint,
     roof_area_m2       numeric,
     solar_yield_kwh    numeric,
     has_solar_potential boolean NOT NULL,
+    roof_orientation_deg numeric,     -- azimuth of the best-class plane
+    roof_tilt_deg        numeric,     -- tilt of the best-class plane
 
     -- Noise (dB(A) Lr).
     noise_road_day     numeric,
@@ -66,7 +70,9 @@ CREATE TABLE gold.building (
 INSERT INTO gold.building (
     egid, egrid, bfs_nr, gemeinde_name,
     building_category, building_class, year_built, area_m2, floors, dwellings, heating,
+    hot_water_source, heat_generator_type,
     solar_class, roof_area_m2, solar_yield_kwh, has_solar_potential,
+    roof_orientation_deg, roof_tilt_deg,
     noise_road_day, noise_road_night, road_noise_modelled,
     noise_rail_day, noise_rail_night, has_rail_noise,
     geom
@@ -84,11 +90,15 @@ SELECT
     b.floors,
     b.dwellings,
     b.heating,
+    b.hot_water_source,
+    b.heat_generator_type,
 
     s.best_class,
     s.roof_area_m2,
     s.solar_yield_kwh,
     s.egid IS NOT NULL,
+    s.best_orientation_deg,
+    s.best_tilt_deg,
 
     n.road_lr_day,
     n.road_lr_night,

@@ -80,24 +80,54 @@ CREATE TABLE silver.building_solar (
     roof_area_m2    numeric  NOT NULL,
     solar_yield_kwh numeric,
     n_planes        integer  NOT NULL,
+    best_orientation_deg numeric,  -- azimuth of the plane that sets best_class
+    best_tilt_deg        numeric,  -- tilt of that same plane
 
     CONSTRAINT building_solar_best_class_range CHECK (best_class BETWEEN 1 AND 5),
     CONSTRAINT building_solar_n_planes_positive CHECK (n_planes > 0)
 );
 
-INSERT INTO silver.building_solar (egid, best_class, roof_area_m2, solar_yield_kwh, n_planes)
+-- best_class is max(klasse) over the building's planes, so no single plane
+-- "is" the class. Orientation/tilt describe the plane that ACHIEVES best_class
+-- (highest klasse), ties broken by largest area then df_uid for determinism --
+-- the plane the class is really about, NOT an average of azimuths (which is
+-- meaningless). The aggregates (area/yield/count) stay summed over all planes.
+INSERT INTO silver.building_solar (
+    egid, best_class, roof_area_m2, solar_yield_kwh, n_planes,
+    best_orientation_deg, best_tilt_deg
+)
 SELECT
-    r.egid,
-    max(r.klasse),
-    sum(r.flaeche_m2),
-    sum(r.stromertrag_kwh),
-    count(*)
-FROM silver.roof_plane r
-JOIN silver.building b ON b.egid = r.egid
-WHERE r.egid IS NOT NULL
-GROUP BY r.egid;
+    agg.egid,
+    agg.best_class,
+    agg.roof_area_m2,
+    agg.solar_yield_kwh,
+    agg.n_planes,
+    rep.ausrichtung,
+    rep.neigung
+FROM (
+    SELECT
+        r.egid,
+        max(r.klasse)          AS best_class,
+        sum(r.flaeche_m2)      AS roof_area_m2,
+        sum(r.stromertrag_kwh) AS solar_yield_kwh,
+        count(*)               AS n_planes
+    FROM silver.roof_plane r
+    JOIN silver.building b ON b.egid = r.egid
+    WHERE r.egid IS NOT NULL
+    GROUP BY r.egid
+) agg
+LEFT JOIN LATERAL (
+    SELECT rp.ausrichtung, rp.neigung
+    FROM silver.roof_plane rp
+    WHERE rp.egid = agg.egid
+    ORDER BY rp.klasse DESC, rp.flaeche_m2 DESC NULLS LAST, rp.df_uid
+    LIMIT 1
+) rep ON true;
 
 COMMENT ON TABLE silver.building_solar IS
     'Roof solar potential aggregated to the building. best_class = max plane '
     'suitability, roof_area_m2/solar_yield_kwh summed over planes. Absence of '
     'a row means the building has no surveyed roof plane.';
+COMMENT ON COLUMN silver.building_solar.best_orientation_deg IS
+    'Azimuth of the plane that achieves best_class (ties: largest area). Not an '
+    'average -- it describes the single plane the class is based on.';

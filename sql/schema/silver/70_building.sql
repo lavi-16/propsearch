@@ -53,6 +53,8 @@ CREATE TABLE silver.building (
     floors             smallint,
     dwellings          smallint,
     heating            text,          -- decoded genh1
+    hot_water_source   text,          -- genw1 bucketed (see CASE in the INSERT)
+    heat_generator_type text,         -- gwaerzh1 bucketed (see CASE in the INSERT)
 
     geom               geometry(Point, 2056) NOT NULL,
 
@@ -67,14 +69,21 @@ CREATE TABLE silver.building (
     CONSTRAINT building_floors_positive
         CHECK (floors IS NULL OR floors > 0),
     CONSTRAINT building_dwellings_positive
-        CHECK (dwellings IS NULL OR dwellings > 0)
+        CHECK (dwellings IS NULL OR dwellings > 0),
+    CONSTRAINT building_hot_water_source_domain
+        CHECK (hot_water_source IS NULL OR hot_water_source
+               IN ('fossil', 'electric', 'solar-thermal', 'other')),
+    CONSTRAINT building_heat_generator_type_domain
+        CHECK (heat_generator_type IS NULL OR heat_generator_type
+               IN ('boiler_condensing', 'boiler_non_condensing',
+                   'boiler_generic', 'stove', 'heat_pump', 'other'))
 );
 
 INSERT INTO silver.building (
     egid, egrid, bfs_nr, parcel_number,
     gstat, building_status, is_existing,
     building_category, building_class, year_built, area_m2, volume_m3,
-    floors, dwellings, heating, geom
+    floors, dwellings, heating, hot_water_source, heat_generator_type, geom
 )
 SELECT
     g.egid,
@@ -94,6 +103,34 @@ SELECT
     NULLIF(g.gastw, '')::numeric::smallint,
     NULLIF(g.ganzwhg, '')::numeric::smallint,
     kenh.codtxtld,
+
+    -- genw1 (hot-water energy SOURCE) bucketed to the four the strand targets.
+    -- Codes are the GWR energy-source space (7500-7599). We group rather than
+    -- carry the raw label because the question is "is the hot water still on the
+    -- fossil boiler?": 7520 Gas / 7530 Heizoel = fossil; 7560 Elektrizitaet =
+    -- electric; 7570 Sonne (thermisch) = solar-thermal; the rest (wood, district
+    -- heat, heat-pump sources, Keine, ...) = other. NULL = unrecorded.
+    CASE
+        WHEN g.genw1 IN ('7520', '7530') THEN 'fossil'
+        WHEN g.genw1 =  '7560'           THEN 'electric'
+        WHEN g.genw1 =  '7570'           THEN 'solar-thermal'
+        WHEN NULLIF(g.genw1, '') IS NULL THEN NULL
+        ELSE 'other'
+    END,
+
+    -- gwaerzh1 (heat generator TYPE) bucketed, flagging condensing vs generic.
+    -- 7434/7435 condensing boiler; 7432/7433 non-condensing; 7430/7431 generic;
+    -- 7436 Ofen (stove); 7410/7411 heat pump; rest = other. NULL = unrecorded.
+    CASE
+        WHEN g.gwaerzh1 IN ('7434', '7435') THEN 'boiler_condensing'
+        WHEN g.gwaerzh1 IN ('7432', '7433') THEN 'boiler_non_condensing'
+        WHEN g.gwaerzh1 IN ('7430', '7431') THEN 'boiler_generic'
+        WHEN g.gwaerzh1 =  '7436'           THEN 'stove'
+        WHEN g.gwaerzh1 IN ('7410', '7411') THEN 'heat_pump'
+        WHEN NULLIF(g.gwaerzh1, '') IS NULL THEN NULL
+        ELSE 'other'
+    END,
+
     g.geometry
 FROM bronze.gwr_gebaeude g
 LEFT JOIN bronze.gwr_kodes kstat ON kstat.cecodid = g.gstat AND kstat.cmerkm = 'GSTAT'
@@ -123,3 +160,9 @@ COMMENT ON COLUMN silver.building.volume_m3 IS
 COMMENT ON COLUMN silver.building.heating IS
     'Decoded genh1 (heat generator, main heating). "Keine" is a real value '
     '(no heating), distinct from NULL (unrecorded).';
+COMMENT ON COLUMN silver.building.hot_water_source IS
+    'genw1 (hot-water energy source) bucketed: fossil (Gas/Heizoel), electric, '
+    'solar-thermal, other. NULL is unrecorded, never "no hot water".';
+COMMENT ON COLUMN silver.building.heat_generator_type IS
+    'gwaerzh1 (heat generator type) bucketed, condensing kept distinct from '
+    'generic boiler. NULL is unrecorded.';
