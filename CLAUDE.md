@@ -510,6 +510,41 @@ The candidate table still **persists** (never dropped); the new columns are adde
 and refreshed in the `ON CONFLICT … DO UPDATE SET` alongside the other derived columns —
 `status`/`address` still untouched.
 
+**EFH/MFH formalised as an outreach segment (2026-08-19), selection criteria unchanged (still
+2,439).** `building_segment` was added to `neoteq.candidate` — a pure `CASE` on `dwelling_count`
+(`1 → EFH`, `2+ → MFH`, `NULL → unknown`), pinned by a `CHECK` in `{EFH, MFH, unknown}` (NULL
+passes the CHECK, but the derivation maps every row incl. NULL to a bucket, so no `is_candidate`
+row is left NULL). This is the basis for **two outreach tracks: EFH (1,309) = active Phase-1
+focus; MFH (1,037) = deliberately deferred** (STWEG/multi-stakeholder complexity). Same
+persistence discipline as the detail columns — guarded `ALTER … ADD COLUMN`, refreshed in the
+upsert, `status`/`address` untouched. Tests assert segment is non-null wherever `dwelling_count`
+resolved, the biconditional to `dwelling_count`, the domain, and that per-Gemeinde EFH/MFH
+counts reproduce the last report (Bottighofen 112/46, Ermatingen 144/97, Kreuzlingen 649/698,
+Münsterlingen 204/91, Tägerwilen 200/105).
+
+**PV-upsell added as a distinct, deliberately non-active cohort (2026-08-19, Option 2).**
+`neoteq.candidate` now holds **two cohorts in one table**: `is_candidate` = the cold-conversion
+list (fossil + solar-4/5 + **no** PV, still **2,439**, the active Phase-1 set) and `is_pv_upsell`
+= fossil + solar-4/5 + **PV already attached** (**317**). The two are **mutually exclusive by
+construction** (they split on the PV clause), so total rows are 2,756 but the active count is
+unchanged. Upsell rows are `is_candidate = false` on purpose — they **persist and are queryable
+without inflating the active count**. The former `has_pv` column was renamed **`has_existing_pv`**
+(a guarded `RENAME COLUMN`); it carries the *factual* `EXISTS silver.building_pv` on every row
+(true for all upsell, false for all cold), so a future retired row keeps an honest PV flag. Both
+cohorts get `building_segment` and address enrichment (all 317 resolve). A building that installs
+PV migrates cold→upsell across a rerun **carrying its `status`/history** — each cohort's upsert
+sets *both* membership flags authoritatively, and a per-cohort `_retire` handles rows leaving
+both. `make neoteq` stays idempotent; `status`/`address` untouched for both cohorts (verified).
+
+**Two caveats travel with `pv_upsell`, recorded not resolved.** (1) It is a **data segment, not
+a validated sales motion** — no pitch/offer defined, so it is **not contact-ready** despite being
+address-enriched; the Grundbuch contact-resolution blocker applies equally to both cohorts. (2)
+The **solar-4/5 roof gate is inherited** from the cold-conversion query, not re-justified: it
+meant "good roof → viable HP + new PV", but these buildings already have PV and a heat pump needs
+no roof. Keeping the gate scopes upsell to 317; **dropping it** would widen it to all fossil-heat
++ PV buildings regardless of roof class. That yes/no is left **open** — flagged in
+`UPSELL_PREDICATE`'s comment in `transform/neoteq.py` — until a conscious call is made.
+
 ## Energieförderprogramm (`bronze.gemeinde_energiefoerderung`) — Gemeinde-level subsidy context
 
 `ingest/discover_divenergie.py` + `load_bronze_divenergie.py`. data.tg.ch `div-energie-2`
